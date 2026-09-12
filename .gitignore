@@ -1,0 +1,12 @@
+node_modules
+npm-debug.log
+
+# managed
+**.data.json
+**.node-persist**
+**_IGNORE_**
+/flow-json
+/contacts
+/sessions
+# end managed
+conversations/

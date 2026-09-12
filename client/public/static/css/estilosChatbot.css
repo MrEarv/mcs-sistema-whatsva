@@ -1,0 +1,70 @@
+#qrCode{
+    z-index: 1000;
+    position: relative;
+    background: black;
+    opacity: 1;
+    margin: auto;
+    display: block;
+    overflow: hidden;
+    text-align: center;
+	top:10%;
+}
+#overlay{
+    display: block;
+    z-index: 500;
+    position: absolute;
+    background: black;
+    top: 0%;
+    left: 0%;
+    width: 100vw;
+    height: 100vh;
+    opacity: 0.8;
+}
+#overlay video{
+	border-radius: 10px;
+    width: 600px;
+    display: block;
+    position: relative;
+    margin: auto;
+	top: 5%;
+}
+.titleqr{
+	    color: white;
+    font-size: 60px;
+    display: block;
+    text-align: center;
+    margin-top: 100px;
+}
+.titleqr2{
+	     color: white;
+    font-size: 30px;
+    display: block;
+    text-align: center;
+    margin-top: 150px;
+}
+#closeqr{
+	cursor:pointer;
+	    width: 50px;
+    height: 50px;
+    position: absolute;
+    top: 0px;
+    right: 0px;
+    z-index: 1000;
+    color: white;
+    font-size: 35px;
+    background: black;
+    border: 1px solid;
+    text-align: center;
+}
+.css-196yqad,.css-xx1kgq,.css-1jmj83x,.css-1jmj83x,.css-midytx{
+	background-color:#2BA3DA !important;
+}
+header{
+	background-color:#00A884 !important;
+}
+.css-1bxffrm {
+    
+    color: beige !important;
+}
+	
+	/*color:#2BA3DA !important;*/
