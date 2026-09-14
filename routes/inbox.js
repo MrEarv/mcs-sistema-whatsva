@@ -4,155 +4,183 @@ const bcrypt = require('bcrypt')
 const { sign } = require('jsonwebtoken')
 const validateUser = require('../middlewares/user.js')
 const moment = require('moment')
-const { isValidEmail, encodeObject, sendChatTextMessage, deleteFileIfExists, getImageAsBase64, convertTempletObj } = require('../functions/function.js')
+const { isValidEmail, encodeObject, deleteFileIfExists, getImageAsBase64, convertTempletObj } = require('../functions/function.js')
 const randomstring = require('randomstring')
 const { createSession, sendMessage, getSession, formatPhone, getChatList } = require('../middlewares/req.js')
 const { fetchPersonStatus, fetchProfileUrl, fetchBusinessprofile, fetchGroupMeta } = require('../functions/control.js')
 const { sendTextMsg, sendMedia, sendPollMsg } = require('../functions/x.js')
 const mime = require('mime-types');
 const { checkPlanExpiry } = require('../middlewares/planValidator.js')
+const fs = require('fs');
+const path = require('path');
+
+// Helper universal para extraer el payload sin importar cómo lo envíe React (body, data.body, etc.)
+const extractPayload = (req) => req.body?.data?.body || req.body?.body || req.body?.data || req.body;
+
+// Helper para encontrar archivos multimedia si el nombre no coincide exactamente
+const resolveMediaFileName = (inputName) => {
+    const mediaDir = `${__dirname}/../client/public/media`;
+    if (inputName && fs.existsSync(`${mediaDir}/${inputName}`)) {
+        return inputName;
+    }
+    try {
+        const files = fs.readdirSync(mediaDir);
+        if (files.length > 0) {
+            files.sort((a, b) => fs.statSync(`${mediaDir}/${b}`).mtimeMs - fs.statSync(`${mediaDir}/${a}`).mtimeMs);
+            return files[0];
+        }
+    } catch (e) {
+        console.error("Error al buscar archivo en media:", e);
+    }
+    return inputName;
+};
 
 // get my chats 
 router.get("/get_my_chats", validateUser, checkPlanExpiry, async (req, res) => {
     try {
-        const { instance } = req.query
+        const { instance } = req.query;
+        let selIns;
 
-        let selIns
+        const userInstances = await query(`SELECT * FROM instance WHERE uid = ?`, [req.decode.uid]);
+
+        if (!userInstances || userInstances.length === 0) {
+            return res.json({ success: false, msg: "No tienes ninguna instancia conectada." });
+        }
+
+        const getSessionId = (title) => encodeObject({ uid: req.decode.uid, client_id: title });
 
         if (instance) {
-
-            selIns = instance
-
-            await query(`UPDATE user SET opened_chat_instance = ? WHERE uid = ?`, [
-                instance,
-                req.decode.uid
-            ])
-        } else {
-
-            // getting already selected instance 
-            if (req?.user?.opened_chat_instance) {
-                selIns = req?.user?.opened_chat_instance
-            } else {
-
-                // setting the instance 
-                const getInstance = await query(`SELECT * FROM instance WHERE uid = ? LIMIT 1`, [
-                    req.decode.uid
-                ])
-
-                const selInsId = getInstance[0]?.instance_id
-                selIns = selInsId
-
-                await query(`UPDATE user SET opened_chat_instance = ? WHERE uid = ?`, [
-                    selInsId,
-                    req.decode.uid
-                ])
+            selIns = instance;
+        } else if (req?.user?.opened_chat_instance) {
+            selIns = req?.user?.opened_chat_instance;
+            const isValid = userInstances.some(inst => getSessionId(inst.title) === selIns);
+            if (!isValid) {
+                selIns = getSessionId(userInstances[0].title);
             }
+        } else {
+            selIns = getSessionId(userInstances[0].title);
         }
 
-        // testing the instance 
-        const session = await getSession(selIns)
+        await query(`UPDATE user SET opened_chat_instance = ? WHERE uid = ?`, [
+            selIns,
+            req.decode.uid
+        ]);
+
+        let session = await getSession(selIns);
 
         if (!session) {
-            return res.json({ msg: "Instance not found. Please re add the instance" })
+            return res.json({ success: false, msg: "Instance not found. Please re add the instance" });
         }
 
-        const userData = session?.authState?.creds?.me || session.user
+        const userData = session?.authState?.creds?.me || session.user;
 
-        const data = await query(`SELECT * FROM chats WHERE uid = ? AND instance_id = ?`, [
+        const data = await query(`SELECT * FROM chats WHERE uid = ? AND instance_id = ? ORDER BY last_message_came DESC`, [
             req.decode.uid,
             selIns
-        ])
-        res.json({ data, success: true, userData: { ...userData, selIns } })
+        ]);
+        
+        res.json({ data, success: true, userData: { ...userData, selIns } });
 
     } catch (err) {
-        res.json({ success: false, msg: "something went wrong", err })
-        console.log(err)
+        console.log("Error en /get_my_chats:", err);
+        res.json({ success: false, msg: "something went wrong", err: err.message || err });
     }
-})
+});
 
 
 // send text message 
 router.post('/send_text', validateUser, checkPlanExpiry, async (req, res) => {
     try {
-        const { text, toJid, toName, chatId, instance } = req.body
+        const payload = extractPayload(req);
+        const { text, toJid, toName, chatId, instance } = payload;
 
-        if (!text || !toJid || !toName || !chatId || !instance) {
-            return res.json({ success: false, msg: "Not enough input provided" })
+        const finalToJid = toJid || chatId;
+        const finalChatId = chatId || toJid;
+
+        if (!text || !finalToJid || !instance) {
+            return res.json({ success: false, msg: "Not enough input provided" });
         }
 
-        const msgObj = {
-            text
-        }
-
-        const uid = req.decode.uid
+        const msgObj = { text };
+        const uid = req.decode.uid;
 
         const saveObj = {
             "group": false,
             "type": "text",
             "msgId": "",
-            "remoteJid": toJid,
+            "remoteJid": finalToJid,
             "msgContext": msgObj,
             "reaction": "",
             "timestamp": "",
-            "senderName": toName,
+            "senderName": toName || "Usuario",
             "status": "sent",
             "star": false,
             "route": "outgoing",
             "context": ""
-        }
+        };
 
-        const session = await getSession(instance)
+        const session = await getSession(instance);
 
         const resp = await sendTextMsg({
             uid,
             msgObj,
-            toJid,
+            toJid: finalToJid,
             saveObj,
-            chatId,
+            chatId: finalChatId,
             session,
             sessionId: instance
-        })
+        });
 
-        res.json(resp)
+        res.json(resp);
 
     } catch (err) {
-        res.json({ success: false, msg: "something went wrong", err })
-        console.log(err)
+        res.json({ success: false, msg: "something went wrong", err });
+        console.log(err);
     }
-})
+});
+
 
 // send image msg 
 router.post('/send_image', validateUser, checkPlanExpiry, async (req, res) => {
     try {
-        const { caption, toJid, toName, chatId, instance, fileName, image } = req.body
+        const payload = extractPayload(req);
+        
+        const caption = payload.caption || payload.text || "";
+        const toJid = payload.toJid || payload.remoteJid || payload.jid || payload.receiver;
+        const toName = payload.toName || payload.name || payload.senderName || "Usuario";
+        const chatId = payload.chatId || payload.chat_id || payload.id;
+        const instance = payload.instance || payload.sessionId || payload.instance_id;
 
+        const finalToJid = toJid || chatId;
+        const finalChatId = chatId || toJid;
 
-        if (!toJid || !toName || !chatId || !instance || !fileName || !image) {
-            return res.json({ success: false, msg: "Please select an image" })
+        if (!finalToJid || !finalChatId || !instance) {
+            return res.json({ success: false, msg: "Faltan datos de destino (toJid, chatId o instance)" });
         }
 
+        let imageName = payload.image || payload.fileName || payload.file || payload.originalFile;
+        imageName = resolveMediaFileName(imageName);
+
+        const mediaDir = `${__dirname}/../client/public/media`;
         const sendObj = {
-            image: {
-                url: `${__dirname}/../client/public/media/${image}`
-            },
+            image: { url: `${mediaDir}/${imageName}` },
             caption: caption || null,
-            fileName,
-            jpegThumbnail: getImageAsBase64(`${__dirname}/../client/public/media/${image}`)
-        }
+            fileName: imageName,
+            jpegThumbnail: getImageAsBase64(`${mediaDir}/${imageName}`)
+        };
 
         const msgObj = {
-            caption: caption || "",
-            fileName: image,
-            "mimetype": mime.lookup(image)
-        }
+            caption: caption,
+            fileName: imageName,
+            "mimetype": mime.lookup(imageName) || "image/jpeg"
+        };
 
-        const uid = req.decode.uid
-
+        const uid = req.decode.uid;
         const saveObj = {
             "group": false,
             "type": "image",
             "msgId": "",
-            "remoteJid": toJid,
+            "remoteJid": finalToJid,
             "msgContext": msgObj,
             "reaction": "",
             "timestamp": "",
@@ -161,60 +189,69 @@ router.post('/send_image', validateUser, checkPlanExpiry, async (req, res) => {
             "star": false,
             "route": "outgoing",
             "context": ""
-        }
+        };
 
-        const session = await getSession(instance)
-
+        const session = await getSession(instance);
         const resp = await sendMedia({
             uid,
             msgObj,
-            toJid,
+            toJid: finalToJid,
             saveObj,
-            chatId,
+            chatId: finalChatId,
             session,
             sessionId: instance,
             sendObj
-        })
+        });
 
-        res.json(resp)
+        res.json(resp);
 
     } catch (err) {
-        res.json({ success: false, msg: "something went wrong", err })
-        console.log(err)
+        console.log("Error en /send_image:", err);
+        res.json({ success: false, msg: "something went wrong", err: err.message || err });
     }
-})
+});
 
 
 // send video 
 router.post('/send_video', validateUser, checkPlanExpiry, async (req, res) => {
     try {
-        const { caption, toJid, toName, chatId, instance, fileName, originalFile } = req.body
+        const payload = extractPayload(req);
+        
+        const caption = payload.caption || payload.text || "";
+        const toJid = payload.toJid || payload.remoteJid || payload.jid;
+        const toName = payload.toName || payload.name || "Usuario";
+        const chatId = payload.chatId || payload.chat_id || payload.id;
+        const instance = payload.instance || payload.sessionId || payload.instance_id;
 
-        if (!toJid || !toName || !chatId || !instance || !fileName || !originalFile) {
-            return res.json({ success: false, msg: "Please select an video" })
+        const finalToJid = toJid || chatId;
+        const finalChatId = chatId || toJid;
+
+        if (!finalToJid || !finalChatId || !instance) {
+            return res.json({ success: false, msg: "Faltan datos de destino" });
         }
 
+        let fileName = payload.fileName || payload.image || payload.file || payload.originalFile;
+        fileName = resolveMediaFileName(fileName);
+
+        const mediaDir = `${__dirname}/../client/public/media`;
         const sendObj = {
-            video: {
-                url: `${__dirname}/../client/public/media/${fileName}`
-            },
+            video: { url: `${mediaDir}/${fileName}` },
             caption: caption || null,
-            fileName: originalFile
-        }
+            fileName: fileName
+        };
 
         const msgObj = {
             caption: caption || "",
             fileName: fileName,
-            mimetype: mime.lookup(fileName)
-        }
+            mimetype: mime.lookup(fileName) || "video/mp4"
+        };
 
-        const uid = req.decode.uid
-
+        const uid = req.decode.uid;
         const saveObj = {
             "group": false,
             "type": "video",
             "msgId": "",
-            "remoteJid": toJid,
+            "remoteJid": finalToJid,
             "msgContext": msgObj,
             "reaction": "",
             "timestamp": "",
@@ -223,229 +260,185 @@ router.post('/send_video', validateUser, checkPlanExpiry, async (req, res) => {
             "star": false,
             "route": "outgoing",
             "context": ""
-        }
+        };
 
-        const session = await getSession(instance)
-
-        console.log({
-            sendObj
-        })
-
+        const session = await getSession(instance);
         const resp = await sendMedia({
-            uid,
-            msgObj,
-            toJid,
-            saveObj,
-            chatId,
-            session,
-            sessionId: instance,
-            sendObj
-        })
+            uid, msgObj, toJid: finalToJid, saveObj, chatId: finalChatId, session, sessionId: instance, sendObj
+        });
 
-        res.json(resp)
+        res.json(resp);
 
     } catch (err) {
-        res.json({ success: false, msg: "something went wrong", err })
-        console.log(err)
+        res.json({ success: false, msg: "something went wrong", err });
+        console.log(err);
     }
-})
+});
+
 
 // send doc 
 router.post('/send_doc', validateUser, checkPlanExpiry, async (req, res) => {
     try {
-        const { caption, toJid, toName, chatId, instance, fileName, originalFile } = req.body
+        const payload = extractPayload(req);
+        
+        const caption = payload.caption || "";
+        const toJid = payload.toJid || payload.remoteJid || payload.jid;
+        const toName = payload.toName || "Usuario";
+        const chatId = payload.chatId || payload.id;
+        const instance = payload.instance || payload.sessionId;
 
-        if (!toJid || !toName || !chatId || !instance || !fileName || !originalFile) {
-            return res.json({ success: false, msg: "Please select an video" })
+        const finalToJid = toJid || chatId;
+        const finalChatId = chatId || toJid;
+
+        if (!finalToJid || !instance) {
+            return res.json({ success: false, msg: "Faltan datos de destino" });
         }
 
+        let fileName = payload.fileName || payload.file || payload.originalFile;
+        fileName = resolveMediaFileName(fileName);
+
+        const mediaDir = `${__dirname}/../client/public/media`;
         const sendObj = {
-            document: {
-                url: `${__dirname}/../client/public/media/${fileName}`
-            },
+            document: { url: `${mediaDir}/${fileName}` },
             caption: caption || null,
-            fileName: originalFile
-        }
+            fileName: fileName
+        };
 
         const msgObj = {
             caption: caption || "",
             fileName: fileName,
-            mimetype: mime.lookup(fileName)
-        }
+            mimetype: mime.lookup(fileName) || "application/pdf"
+        };
 
-        const uid = req.decode.uid
-
+        const uid = req.decode.uid;
         const saveObj = {
-            "group": false,
-            "type": "doc",
-            "msgId": "",
-            "remoteJid": toJid,
-            "msgContext": msgObj,
-            "reaction": "",
-            "timestamp": "",
-            "senderName": toName,
-            "status": "sent",
-            "star": false,
-            "route": "outgoing",
-            "context": ""
-        }
+            "group": false, "type": "doc", "msgId": "", "remoteJid": finalToJid, "msgContext": msgObj,
+            "reaction": "", "timestamp": "", "senderName": toName, "status": "sent", "star": false, "route": "outgoing", "context": ""
+        };
 
-        const session = await getSession(instance)
+        const session = await getSession(instance);
+        const resp = await sendMedia({ uid, msgObj, toJid: finalToJid, saveObj, chatId: finalChatId, session, sessionId: instance, sendObj });
 
-        const resp = await sendMedia({
-            uid,
-            msgObj,
-            toJid,
-            saveObj,
-            chatId,
-            session,
-            sessionId: instance,
-            sendObj
-        })
-
-        res.json(resp)
+        res.json(resp);
 
     } catch (err) {
-        res.json({ success: false, msg: "something went wrong", err })
-        console.log(err)
+        res.json({ success: false, msg: "something went wrong", err });
+        console.log(err);
     }
-})
+});
+
 
 // send audio 
 router.post('/send_aud', validateUser, checkPlanExpiry, async (req, res) => {
     try {
-        const { toJid, toName, chatId, instance, fileName, originalFile } = req.body
+        const payload = extractPayload(req);
+        const toJid = payload.toJid || payload.remoteJid || payload.jid;
+        const toName = payload.toName || "Usuario";
+        const chatId = payload.chatId || payload.id;
+        const instance = payload.instance || payload.sessionId;
 
-        if (!toJid || !toName || !chatId || !instance || !fileName || !originalFile) {
-            return res.json({ success: false, msg: "Please select an video" })
+        const finalToJid = toJid || chatId;
+        const finalChatId = chatId || toJid;
+
+        if (!finalToJid || !instance) {
+            return res.json({ success: false, msg: "Faltan datos de destino" });
         }
 
+        let fileName = payload.fileName || payload.file || payload.originalFile;
+        fileName = resolveMediaFileName(fileName);
+
+        const mediaDir = `${__dirname}/../client/public/media`;
         const sendObj = {
-            audio: {
-                url: `${__dirname}/../client/public/media/${fileName}`
-            },
-            fileName: originalFile,
+            audio: { url: `${mediaDir}/${fileName}` },
+            fileName: fileName,
             ptt: true
-        }
+        };
 
         const msgObj = {
             caption: "",
             fileName: fileName,
-            mimetype: mime.lookup(fileName)
-        }
+            mimetype: mime.lookup(fileName) || "audio/ogg"
+        };
 
-        const uid = req.decode.uid
-
+        const uid = req.decode.uid;
         const saveObj = {
-            "group": false,
-            "type": "aud",
-            "msgId": "",
-            "remoteJid": toJid,
-            "msgContext": msgObj,
-            "reaction": "",
-            "timestamp": "",
-            "senderName": toName,
-            "status": "sent",
-            "star": false,
-            "route": "outgoing",
-            "context": ""
-        }
+            "group": false, "type": "aud", "msgId": "", "remoteJid": finalToJid, "msgContext": msgObj,
+            "reaction": "", "timestamp": "", "senderName": toName, "status": "sent", "star": false, "route": "outgoing", "context": ""
+        };
 
-        const session = await getSession(instance)
+        const session = await getSession(instance);
+        const resp = await sendMedia({ uid, msgObj, toJid: finalToJid, saveObj, chatId: finalChatId, session, sessionId: instance, sendObj });
 
-        const resp = await sendMedia({
-            uid,
-            msgObj,
-            toJid,
-            saveObj,
-            chatId,
-            session,
-            sessionId: instance,
-            sendObj
-        })
-
-        res.json(resp)
+        res.json(resp);
 
     } catch (err) {
-        res.json({ success: false, msg: "something went wrong", err })
-        console.log(err)
+        res.json({ success: false, msg: "something went wrong", err });
+        console.log(err);
     }
-})
+});
+
 
 // send location 
 router.post('/send_loc', validateUser, checkPlanExpiry, async (req, res) => {
     try {
-        const { toJid, toName, chatId, instance, lat, long } = req.body
+        const payload = extractPayload(req);
+        const toJid = payload.toJid || payload.remoteJid || payload.jid;
+        const toName = payload.toName || "Usuario";
+        const chatId = payload.chatId || payload.id;
+        const instance = payload.instance || payload.sessionId;
+        const lat = payload.lat;
+        const long = payload.long;
 
-        if (!toJid || !toName || !chatId || !instance || !lat || !long) {
-            return res.json({ success: false, msg: "Please write all fields" })
+        const finalToJid = toJid || chatId;
+        const finalChatId = chatId || toJid;
+
+        if (!finalToJid || !instance || !lat || !long) {
+            return res.json({ success: false, msg: "Please write all fields" });
         }
 
         const sendObj = {
             location: { degreesLatitude: lat, degreesLongitude: long }
-        }
+        };
 
-        const msgObj = {
-            lat: lat,
-            long: long,
-            "name": "",
-            "address": ""
-        }
-
-        const uid = req.decode.uid
-
+        const msgObj = { lat, long, "name": "", "address": "" };
+        const uid = req.decode.uid;
         const saveObj = {
-            "group": false,
-            "type": "loc",
-            "msgId": "",
-            "remoteJid": toJid,
-            "msgContext": msgObj,
-            "reaction": "",
-            "timestamp": "",
-            "senderName": toName,
-            "status": "sent",
-            "star": false,
-            "route": "outgoing",
-            "context": ""
-        }
+            "group": false, "type": "loc", "msgId": "", "remoteJid": finalToJid, "msgContext": msgObj,
+            "reaction": "", "timestamp": "", "senderName": toName, "status": "sent", "star": false, "route": "outgoing", "context": ""
+        };
 
-        const session = await getSession(instance)
+        const session = await getSession(instance);
+        const resp = await sendMedia({ uid, msgObj, toJid: finalToJid, saveObj, chatId: finalChatId, session, sessionId: instance, sendObj });
 
-        const resp = await sendMedia({
-            uid,
-            msgObj,
-            toJid,
-            saveObj,
-            chatId,
-            session,
-            sessionId: instance,
-            sendObj
-        })
-
-        res.json(resp)
+        res.json(resp);
 
     } catch (err) {
-        res.json({ success: false, msg: "something went wrong", err })
-        console.log(err)
+        res.json({ success: false, msg: "something went wrong", err });
+        console.log(err);
     }
-})
+});
 
 
 // send poll message 
 router.post('/send_poll', validateUser, checkPlanExpiry, async (req, res) => {
     try {
-        const { toJid, toName, chatId, instance, name, values } = req.body
+        const payload = extractPayload(req);
+        const toJid = payload.toJid || payload.remoteJid || payload.jid;
+        const toName = payload.toName || "Usuario";
+        const chatId = payload.chatId || payload.id;
+        const instance = payload.instance || payload.sessionId;
+        const name = payload.name;
+        const values = payload.values;
 
-        if (!toJid || !toName || !chatId || !instance) {
-            return res.json({ success: false, msg: "Invalid request" })
+        const finalToJid = toJid || chatId;
+        const finalChatId = chatId || toJid;
+
+        if (!finalToJid || !instance) {
+            return res.json({ success: false, msg: "Invalid request" });
         }
 
-        if (!name || values?.length < 1) {
-            return res.json({ msg: "Please give a poll title and poll option(s)" })
-        }
-
-        if (values.length < 2) {
-            return res.json({ msg: "At least 2 options are reuired" })
+        if (!name || !values || values.length < 2) {
+            return res.json({ msg: "At least 2 options are required" });
         }
 
         const msgObj = {
@@ -454,238 +447,202 @@ router.post('/send_poll', validateUser, checkPlanExpiry, async (req, res) => {
                 values: values,
                 selectableCount: 1
             }
-        }
+        };
 
-        const uid = req.decode.uid
-
+        const uid = req.decode.uid;
         const saveObj = {
-            "group": false,
-            "type": "poll",
-            "msgId": "",
-            "remoteJid": toJid,
-            "msgContext": msgObj,
-            "reaction": "",
-            "timestamp": "",
-            "senderName": toName,
-            "status": "sent",
-            "star": false,
-            "route": "outgoing",
-            "context": ""
-        }
+            "group": false, "type": "poll", "msgId": "", "remoteJid": finalToJid, "msgContext": msgObj,
+            "reaction": "", "timestamp": "", "senderName": toName, "status": "sent", "star": false, "route": "outgoing", "context": ""
+        };
 
-        const session = await getSession(instance)
+        const session = await getSession(instance);
+        const resp = await sendTextMsg({ uid, msgObj, toJid: finalToJid, saveObj, chatId: finalChatId, session, sessionId: instance });
 
-
-        const resp = await sendTextMsg({
-            uid,
-            msgObj,
-            toJid,
-            saveObj,
-            chatId,
-            session,
-            sessionId: instance,
-        })
-
-        res.json(resp)
+        res.json(resp);
 
     } catch (err) {
-        res.json({ success: false, msg: "something went wrong", err })
-        console.log(err)
+        res.json({ success: false, msg: "something went wrong", err });
+        console.log(err);
     }
-})
+});
 
 
 // del chat 
 router.post('/del_chat', validateUser, async (req, res) => {
     try {
-        const { chatId } = req.body
+        const payload = extractPayload(req);
+        const chatId = payload.chatId || payload.id;
 
         if (!chatId) {
-            return res.json({ msg: "Please provide chat id" })
+            return res.json({ msg: "Please provide chat id" });
         }
 
-        await query(`DELETE FROM chats WHERE chat_id = ?`, [
-            chatId
-        ])
+        await query(`DELETE FROM chats WHERE chat_id = ?`, [chatId]);
 
-        const filePath = `${__dirname}/../conversations/inbox/${req.decode.uid}/${chatId}.json`
-        deleteFileIfExists(filePath)
+        const filePath = `${__dirname}/../conversations/inbox/${req.decode.uid}/${chatId}.json`;
+        deleteFileIfExists(filePath);
 
-        res.json({
-            msg: "Chat was deleted",
-            success: true
-        })
+        res.json({ msg: "Chat was deleted", success: true });
 
     } catch (err) {
-        res.json({ success: false, msg: "something went wrong", err })
-        console.log(err)
+        res.json({ success: false, msg: "something went wrong", err });
+        console.log(err);
     }
-})
+});
+
 
 // getting sender details 
 router.post('/get_sender_details', validateUser, checkPlanExpiry, async (req, res) => {
     try {
-        const { sessionId, jid } = req.body
+        const payload = extractPayload(req);
+        const sessionId = payload.sessionId || payload.instance;
+        const jid = payload.jid;
 
         if (!sessionId || !jid) {
-            return res.json({
-                msg: "Invalid request"
-            })
+            return res.json({ msg: "Invalid request" });
         }
 
-        const session = await getSession(sessionId)
-
+        const session = await getSession(sessionId);
         if (!session) {
-            return res.json({
-                msg: "This session is busy could not fetch the details"
-            })
+            return res.json({ msg: "This session is busy could not fetch the details" });
         }
 
-        const status = await fetchPersonStatus(session, jid)
-        const profilePhoto = await fetchProfileUrl(session, jid)
-        // const pro = await fetchBusinessprofile(session, jid)
+        const status = await fetchPersonStatus(session, jid);
+        const profilePhoto = await fetchProfileUrl(session, jid);
 
-        res.json({
-            success: true,
-            status: status,
-            profilePhoto: profilePhoto,
-            // pro: pro
-        })
+        res.json({ success: true, status, profilePhoto });
 
     } catch (err) {
-        res.json({ success: false, msg: "something went wrong", err })
-        console.log(err)
+        res.json({ success: false, msg: "something went wrong", err });
+        console.log(err);
     }
-})
+});
+
 
 // get group meta data info 
 router.post('/get_group_meta', validateUser, checkPlanExpiry, async (req, res) => {
     try {
-        const { sessionId, jid } = req.body
+        const payload = extractPayload(req);
+        const sessionId = payload.sessionId || payload.instance;
+        const jid = payload.jid;
 
         if (!sessionId || !jid) {
-            return res.json({
-                msg: "Invalid request"
-            })
+            return res.json({ msg: "Invalid request" });
         }
 
-        const session = await getSession(sessionId)
-
+        const session = await getSession(sessionId);
         if (!session) {
-            return res.json({
-                msg: "This session is busy could not fetch the details"
-            })
+            return res.json({ msg: "This session is busy could not fetch the details" });
         }
 
-        const groupData = await fetchGroupMeta(session, jid)
-        const profilePhoto = await fetchProfileUrl(session, jid)
+        const groupData = await fetchGroupMeta(session, jid);
+        const profilePhoto = await fetchProfileUrl(session, jid);
 
-        res.json({
-            success: true, profilePhoto, groupData
-        })
+        res.json({ success: true, profilePhoto, groupData });
 
     } catch (err) {
-        res.json({ success: false, msg: "something went wrong", err })
-        console.log(err)
+        res.json({ success: false, msg: "something went wrong", err });
+        console.log(err);
     }
-})
+});
+
 
 // get chat note 
 router.post("/get_chat_note", validateUser, async (req, res) => {
     try {
-        const getChat = await query(`SELECT * FROM chats WHERE chat_id = ? AND uid = ?`, [
-            req.body.chatId,
-            req.decode.uid
-        ])
+        const payload = extractPayload(req);
+        const chatId = payload.chatId || payload.id;
 
-        res.json({
-            success: true,
-            data: getChat[0]?.chat_note || ""
-        })
+        const getChat = await query(`SELECT * FROM chats WHERE chat_id = ? AND uid = ?`, [
+            chatId,
+            req.decode.uid
+        ]);
+
+        res.json({ success: true, data: getChat[0]?.chat_note || "" });
 
     } catch (err) {
-        res.json({ success: false, msg: "something went wrong", err })
-        console.log(err)
+        res.json({ success: false, msg: "something went wrong", err });
+        console.log(err);
     }
-})
+});
 
-// get chat note 
+
+// update chat note 
 router.post('/update_chat_note', validateUser, async (req, res) => {
     try {
-        const { chatId, note } = req.body
+        const payload = extractPayload(req);
+        const chatId = payload.chatId || payload.id;
+        const note = payload.note;
+
         await query(`UPDATE chats SET chat_note = ? WHERE chat_id = ? AND uid = ?`, [
             note,
             chatId,
             req.decode.uid
-        ])
+        ]);
 
-        res.json({
-            success: true,
-            msg: "Note updated"
-        })
+        res.json({ success: true, msg: "Note updated" });
 
     } catch (err) {
-        res.json({ success: false, msg: "something went wrong", err })
-        console.log(err)
+        res.json({ success: false, msg: "something went wrong", err });
+        console.log(err);
     }
-})
+});
+
 
 // get msg Votes 
 router.post('/get_poll_votes', validateUser, async (req, res) => {
     try {
-        const { msgId } = req.body
+        const payload = extractPayload(req);
+        const msgId = payload.msgId || payload.id;
+
         const data = await query(`SELECT * FROM poll_votes WHERE msg_id = ? AND uid = ?`, [
             msgId,
             req.decode.uid
-        ])
+        ]);
 
-        res.json({
-            data,
-            success: true
-        })
+        res.json({ data, success: true });
 
     } catch (err) {
-        res.json({ success: false, msg: "something went wrong", err })
-        console.log(err)
+        res.json({ success: false, msg: "something went wrong", err });
+        console.log(err);
     }
-})
+});
+
 
 // send templet 
 router.post('/send_templet', validateUser, checkPlanExpiry, async (req, res) => {
     try {
-        const { id, toJid, toName, chatId, instance } = req.body
+        const payload = extractPayload(req);
+        const id = payload.id;
+        const toJid = payload.toJid || payload.remoteJid || payload.jid;
+        const toName = payload.toName || "Usuario";
+        const chatId = payload.chatId || payload.id;
+        const instance = payload.instance || payload.sessionId;
 
+        const finalToJid = toJid || chatId;
+        const finalChatId = chatId || toJid;
 
-        if (!toJid || !toName || !chatId || !instance) {
-            return res.json({ success: false, msg: "Not enough input provided" })
+        if (!finalToJid || !instance || !id) {
+            return res.json({ success: false, msg: "Not enough input provided" });
         }
 
-        const getTemplet = await query(`SELECT * FROM templets WHERE id = ? AND uid = ?`, [id, req.decode.uid])
+        const getTemplet = await query(`SELECT * FROM templets WHERE id = ? AND uid = ?`, [id, req.decode.uid]);
 
         if (getTemplet.length < 1) {
-            return res.json({ msg: "Templet not found" })
+            return res.json({ msg: "Templet not found" });
         }
 
-        const templetContet = JSON.parse(getTemplet[0]?.content)
-        const templetType = getTemplet[0]?.type
+        const templetContet = JSON.parse(getTemplet[0]?.content);
+        const templetType = getTemplet[0]?.type;
 
+        const { sendObj, msgObj, type } = await convertTempletObj(templetContet, templetType);
 
-        // const msgObj = templetContet
-        const { sendObj, msgObj, type } = await convertTempletObj(templetContet, templetType)
-
-
-        console.log({
-            type,
-            sendObj
-        })
-
-        const uid = req.decode.uid
-
+        const uid = req.decode.uid;
         const saveObj = {
             "group": false,
             "type": templetType?.toLowerCase(),
             "msgId": "",
-            "remoteJid": toJid,
+            "remoteJid": finalToJid,
             "msgContext": msgObj,
             "reaction": "",
             "timestamp": "",
@@ -694,41 +651,22 @@ router.post('/send_templet', validateUser, checkPlanExpiry, async (req, res) => 
             "star": false,
             "route": "outgoing",
             "context": ""
-        }
+        };
 
-        const session = await getSession(instance)
+        const session = await getSession(instance);
 
         if (templetType === "text" || templetType === "poll" || templetType === "loc") {
-            const resp = await sendTextMsg({
-                uid,
-                msgObj,
-                toJid,
-                saveObj,
-                chatId,
-                session,
-                sessionId: instance
-            })
-            res.json(resp)
+            const resp = await sendTextMsg({ uid, msgObj, toJid: finalToJid, saveObj, chatId: finalChatId, session, sessionId: instance });
+            res.json(resp);
         } else {
-
-            const resp = await sendMedia({
-                uid,
-                msgObj,
-                toJid,
-                saveObj,
-                chatId,
-                session,
-                sessionId: instance,
-                sendObj
-            })
-            res.json(resp)
+            const resp = await sendMedia({ uid, msgObj, toJid: finalToJid, saveObj, chatId: finalChatId, session, sessionId: instance, sendObj });
+            res.json(resp);
         }
 
-
     } catch (err) {
-        res.json({ success: false, msg: "something went wrong", err })
-        console.log(err)
+        res.json({ success: false, msg: "something went wrong", err });
+        console.log(err);
     }
-})
+});
 
-module.exports = router
+module.exports = router;

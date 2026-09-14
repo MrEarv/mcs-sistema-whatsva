@@ -138,42 +138,22 @@ async function convertMsg({ obj = {}, outgoing = false }) {
     }
     // for text message 
     else if (obj?.message?.conversation && obj?.key?.remoteJid !== "status@broadcast" && obj?.key?.remoteJid) {
-        if (obj?.key?.remoteJid?.endsWith("@g.us")) {
-            return {
-                group: true,
-                type: "text",
-                msgId: obj?.key?.id,
-                remoteJid: obj?.key?.remoteJid,
-                msgContext: {
-                    text: obj?.message?.conversation
-                },
-                reaction: "",
-                timestamp: obj?.messageTimestamp || timestamp,
-                senderName: obj?.pushName,
-                status: "sent",
-                star: false,
-                route: outgoing ? 'outgoing' : "incoming",
-                context: ""
-            }
-        }
-        if (obj?.key?.remoteJid?.endsWith("@s.whatsapp.net")) {
-            return {
-                group: false,
-                type: "text",
-                msgId: obj?.key?.id,
-                remoteJid: obj?.key?.remoteJid,
-                msgContext: {
-                    text: obj?.message?.conversation
-                },
-                reaction: "",
-                timestamp: obj?.messageTimestamp || timestamp,
-                senderName: obj?.pushName,
-                status: "sent",
-                star: false,
-                route: outgoing ? 'outgoing' : "incoming",
-                context: ""
-            }
-        }
+        return {
+            group: obj?.key?.remoteJid?.endsWith("@g.us"),
+            type: "text",
+            msgId: obj?.key?.id,
+            remoteJid: obj?.key?.remoteJid,
+            msgContext: {
+                text: obj?.message?.conversation
+            },
+            reaction: "",
+            timestamp: obj?.messageTimestamp || timestamp,
+            senderName: obj?.pushName || "Usuario",
+            status: "sent",
+            star: false,
+            route: outgoing ? 'outgoing' : "incoming",
+            context: ""
+        };
     }
     // for text for ectended 
     else if (!obj?.message?.extendedTextMessage?.contextInfo?.stanzaId && obj?.message?.extendedTextMessage?.text && obj?.key?.remoteJid !== "status@broadcast" && obj?.key?.remoteJid) {
@@ -585,85 +565,54 @@ async function updateReaction({ uid, chatId, reaction, msgId, actualObj }) {
     }, 1000);
 }
 
-async function updatingInMysql({
-    session,
-    remoteJid,
-    isGroup,
-    chatId,
-    actualObj,
-    uid,
-    sessionId,
-    chat,
-    fromMe
-}) {
+async function updatingInMysql({ session, remoteJid, isGroup, chatId, actualObj, uid, sessionId, chat, fromMe }) {
     try {
-        // if chat is new 
         if (!fromMe && chat.length < 1) {
-            let profile_image = ""
-            const image = await fetchProfileUrl(session, remoteJid)
+            let profile_image = "";
+            try {
+                const image = await fetchProfileUrl(session, remoteJid)
+                if (image) profile_image = image;
+            } catch(e){}
 
-            if (image) {
-                profile_image = image
-            }
-
-            let groupData = ""
-            let notRestrict = 1
+            let groupData = "";
+            let notRestrict = 1;
 
             if (isGroup) {
-                groupData = await fetchGroupMeta(session, remoteJid)
-                if (groupData) {
-                    groupData = groupData
-                }
-
-                if (groupData?.restrict) {
-                    notRestrict = 0
-                }
+                try {
+                    groupData = await fetchGroupMeta(session, remoteJid)
+                    if (groupData?.restrict) notRestrict = 0;
+                } catch(e){}
             }
 
+            // Blindamos las variables con || null para evitar el crash silencioso
             await query(
                 `INSERT INTO chats (
-                    chat_id, 
-                    uid,
-                    last_message_came,
-                    sender_name,
-                    sender_mobile,
-                    sender_jid,
-                    last_message,
-                    instance_id,
-                    profile_image,
-                    group_data,
-                    can_reply
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?)`, [
-                chatId,
-                uid,
-                actualObj?.timestamp,
-                actualObj?.group ? groupData?.subject : actualObj?.senderName,
-                remoteJid?.endsWith("@g.us")
-                    ? remoteJid?.replace("@g.us", "")
-                    : remoteJid?.replace("@s.whatsapp.net", ""),
-                remoteJid,
-                JSON.stringify(actualObj),
-                sessionId,
-                profile_image,
-                groupData ? JSON.stringify(groupData) : "",
-                notRestrict > 0 ? 1 : 0
-            ])
+                    chat_id, uid, last_message_came, sender_name, sender_mobile, sender_jid, last_message, instance_id, profile, other
+                ) VALUES (?,?,?,?,?,?,?,?,?,?)`, [
+                chatId || null,
+                uid || null,
+                actualObj?.timestamp || null,
+                (actualObj?.group ? groupData?.subject : actualObj?.senderName) || "Usuario",
+                remoteJid?.replace(/@s\.whatsapp\.net|@g\.us/g, "") || null,
+                remoteJid || null,
+                JSON.stringify(actualObj) || null,
+                sessionId || null,
+                profile_image || null,
+                groupData ? JSON.stringify(groupData) : null
+            ]);
         } else {
-            console.log({ sessionId })
-            // if chat is old 
             await query(`UPDATE chats SET last_message_came = ?, last_message = ?, is_opened = ? WHERE chat_id = ? AND uid = ? AND instance_id = ? `, [
-                actualObj?.timestamp,
-                JSON.stringify(actualObj),
+                actualObj?.timestamp || null,
+                JSON.stringify(actualObj) || null,
                 0,
-                chatId,
-                uid,
-                sessionId
-            ])
+                chatId || null,
+                uid || null,
+                sessionId || null
+            ]);
         }
-
-
     } catch (err) {
-        console.log(`Error in updatingInMysql`, err)
+        //console.error(`ERROR CRITICO EN updatingInMysql:`, err);
+        throw err; // Lanzamos el error hacia arriba para verlo en la consola
     }
 }
 
@@ -685,63 +634,36 @@ async function sendNewMsgSocket({
 }
 
 async function webhookIncoming(m, sessionId, session) {
-    // extracting the functions 
-    const state = await extractData(m, sessionId)
+    try {
+        const state = await extractData(m, sessionId);
 
-    if (state.uid) {
-
-        // returning if msg is unknown 
-        if (!state.actualObj) {
-            return
+        if (!state.uid || !state.actualObj) {
+            return;
         }
 
-        // updating reaction 
-        if (state.actualObj?.type === 'reaction') {
-            await updateReaction({
-                uid: state.uid,
-                chatId: state.chatId,
-                reaction: state.actualObj?.reaction,
-                msgId: state.actualObj?.msgId,
-                actualObj: state.actualObj
-            })
-            return
-        }
+        const chat = await query(`SELECT * FROM chats WHERE chat_id = ? AND uid = ? AND instance_id = ?`, [
+            state.chatId || null,
+            state.uid || null,
+            state.sessionId || null
+        ]);
 
-        // getting chat from mysql 
-        const chat = await query(`SELECT * FROM chats WHERE chat_id = ? AND uid = ?`, [
-            state.chatId,
-            state.uid,
-            state.sessionId
-        ])
-
-
-        // updating chat in databse mysql 
         await updatingInMysql({
-            session: session,
-            remoteJid: state.remoteJid,
-            isGroup: state.actualObj.group,
-            chatId: state.chatId,
-            actualObj: state.actualObj,
-            uid: state.uid,
-            sessionId: state.sessionId,
-            chat: chat,
-            fromMe: state.msgFromMe
-        })
+            session: session, remoteJid: state.remoteJid, isGroup: state.actualObj.group, chatId: state.chatId, actualObj: state.actualObj, uid: state.uid, sessionId: state.sessionId, chat: chat, fromMe: state.msgFromMe
+        });
 
-        // saving conversation locally 
-        const chatPath = `${__dirname}/../conversations/inbox/${state.uid}/${state.chatId}.json`
-        addObjectToFile(state.actualObj, chatPath)
+        const chatPath = `${__dirname}/../conversations/inbox/${state.uid}/${state.chatId}.json`;
+        addObjectToFile(state.actualObj, chatPath);
+
 
         if (state.userData?.opened_chat_instance && state.userData?.opened_chat_instance === state.sessionId) {
             await sendNewMsgSocket({
-                uid: state.uid,
-                sessionId: state.sessionId,
-                actualObj: state.actualObj,
-                chatId: state.chatId
-            })
+                uid: state.uid, sessionId: state.sessionId, actualObj: state.actualObj, chatId: state.chatId
+            });
+        } else {
         }
+    } catch (e) {
+        console.error("CRASH EN WEBHOOK:", e);
     }
-
 }
 
 async function returnStateDelivery(obj, uid, sessionId) {

@@ -3,11 +3,8 @@ const { join } = require('path');
 const pino = require('pino');
 const makeWASocket = require('@whiskeysockets/baileys').default;
 const { 
-    Browsers,
     DisconnectReason,
-    delay,
     useMultiFileAuthState,
-    getAggregateVotesInPollMessage,
     downloadMediaMessage,
     getUrlInfo,
     proto 
@@ -15,12 +12,10 @@ const {
 const { toDataURL } = require('qrcode');
 const dirName = require('../dirname.js');
 const response = require('../response.js');
-const { decodeObject, deleteFileIfExists } = require('../functions/function.js');
+const { deleteFileIfExists } = require('../functions/function.js');
 const fs = require('fs');
 const path = require('path');
 const { query } = require('../database/dbpromise.js');
-const { webhookIncoming, updateDelivery } = require('../functions/x.js');
-const { chatbotInit } = require('../loops/chatBot.js');
 
 const sessions = new Map();
 const retries = new Map();
@@ -41,9 +36,6 @@ const shouldReconnect = (sessionId) => {
     return false;
 };
 
-// --------------------
-// Crear store en memoria manual
-// --------------------
 const createMemoryStore = () => {
     const store = {
         messages: {},
@@ -59,9 +51,29 @@ const createMemoryStore = () => {
     return store;
 };
 
-// --------------------
-// Crear sesión
-// --------------------
+// ==========================================
+// FIX: Búsqueda Inteligente de Sesiones
+// ==========================================
+const getSession = (sessionId) => {
+    // 1. Intentamos buscar por coincidencia exacta (Base64)
+    if (sessions.has(sessionId)) return sessions.get(sessionId);
+    
+    // 2. Si no lo encuentra, traducimos las llaves de la memoria RAM
+    for (const [key, session] of sessions.entries()) {
+        try {
+            const decoded = JSON.parse(Buffer.from(key, 'base64').toString('utf-8'));
+            const uniqueId = `${decoded.uid}_${decoded.client_id}`;
+            // Si el nombre de la BD coincide con la llave decodificada, ¡lo encontramos!
+            if (uniqueId === sessionId || decoded.client_id === sessionId) {
+                return session;
+            }
+        } catch (e) {
+            // Ignorar archivos que no sean JSON en Base64 válidos
+        }
+    }
+    return null;
+};
+
 const createSession = async (sessionId, isLegacy = false, req, res, getPairCode, syncMax = false) => {
     const sessionFile = 'md_' + sessionId;
     const logger = pino({ level: 'silent' });
@@ -109,22 +121,17 @@ const createSession = async (sessionId, isLegacy = false, req, res, getPairCode,
 
     const wa = makeWASocket(waConfig);
 
-    // Vincular store al socket
     store.bind(wa.ev);
 
     sessions.set(sessionId, { ...wa, store, isLegacy });
     wa.ev.on('creds.update', saveCreds);
 
-    // --------------------
-    // Manejo de conexión y QR
-    // --------------------
     wa.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
         const statusCode = lastDisconnect?.error?.output?.statusCode;
 
         if (connection === 'open') {
             retries.delete(sessionId);
-            
             try {
                 const decodedSession = JSON.parse(Buffer.from(sessionId, 'base64').toString('utf-8'));
                 const userUid = decodedSession.uid;          
@@ -143,10 +150,8 @@ const createSession = async (sessionId, isLegacy = false, req, res, getPairCode,
                     `UPDATE instance SET status = 'CONNECTED', number = ?, data = ?, qr = '', uniqueId = ? WHERE uid = ? AND title = ?`, 
                     [phoneNumber, dataJson, uniqueId, userUid, instanceTitle]
                 );
-                
-                //console.log(`¡ÉXITO! Instancia ${instanceTitle} conectada y guardada en BD.`);
             } catch (dbError) {
-                //console.error('Error al guardar la conexión en BD:', dbError);
+                console.error('Error al guardar la conexión en BD:', dbError);
             }
         }
 
@@ -165,13 +170,10 @@ const createSession = async (sessionId, isLegacy = false, req, res, getPairCode,
         if (qr && res && !res.headersSent) {
             try {
                 const qrData = await toDataURL(qr);
-                
-                // Parche: Desempaquetamos también aquí para guardar el QR correctamente
                 const decodedSession = JSON.parse(Buffer.from(sessionId, 'base64').toString('utf-8'));
                 const userUid = decodedSession.uid;
                 const instanceTitle = decodedSession.client_id;
                 
-                // Actualizamos buscando por UID y TITLE, no por ID numérico
                 await query(`UPDATE instance SET qr = ? WHERE uid = ? AND title = ?`, [qrData, userUid, instanceTitle]);
                 
                 res.json({ success: true, msg: 'QR code received', qr: qrData, sessionId });
@@ -182,24 +184,20 @@ const createSession = async (sessionId, isLegacy = false, req, res, getPairCode,
         }
     });
 
-    // --------------------
-    // Eventos de mensajes
-    // --------------------
     wa.ev.on('messages.upsert', async (m) => {
         const message = m.messages[0];
-        const session = await getSession(sessionId);
+        const session = getSession(sessionId);
 
         if (message?.key?.remoteJid !== 'status@broadcast' && m.type === 'notify') {
+            // FIX: Romper el bucle de dependencias (Lazy Loading)
+            const { chatbotInit } = require('../loops/chatBot.js');
+            const { webhookIncoming } = require('../functions/x.js');
+
             if (!message.key.fromMe) chatbotInit(m, wa, sessionId, session);
             webhookIncoming(message, sessionId, session);
         }
     });
 };
-
-// --------------------
-// Sesiones y utilidades
-// --------------------
-const getSession = (sessionId) => sessions.get(sessionId) ?? null;
 
 const deleteDirectory = (directoryPath) => {
     if (fs.existsSync(directoryPath)) {
@@ -231,9 +229,13 @@ const cleanup = () => {
 
 const init = () => {
     const sDir = path.join(dirName, 'sessions');
+    if (!fs.existsSync(sDir)) {
+        fs.mkdirSync(sDir, { recursive: true });
+    }
     fs.readdir(sDir, (err, files) => {
         if (err) throw err;
         for (const file of files) {
+            // Ignoramos archivos basura
             if (!file.endsWith('.json') || !file.startsWith('md_') || file.includes('_store')) continue;
             const filename = file.replace('.json', '');
             const isLegacy = filename.split('_', 1)[0] !== 'md';

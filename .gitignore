@@ -10,3 +10,5 @@ npm-debug.log
 /sessions
 # end managed
 conversations/
+# por que subiria imagenes?
+client/public/media/
