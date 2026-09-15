@@ -7,8 +7,12 @@ const {
     useMultiFileAuthState,
     downloadMediaMessage,
     getUrlInfo,
-    proto 
-} = require('@whiskeysockets/baileys');
+    proto,
+    decryptPollVote,
+    getAggregateVotesInPollMessage,
+    getKeyAuthor,
+    jidNormalizedUser,
+  } = require('@whiskeysockets/baileys');
 const { toDataURL } = require('qrcode');
 const dirName = require('../dirname.js');
 const response = require('../response.js');
@@ -36,12 +40,36 @@ const shouldReconnect = (sessionId) => {
     return false;
 };
 
+
 const createMemoryStore = () => {
     const store = {
         messages: {},
         chats: {},
-        loadMessage: async (jid, id) => store.messages[`${jid}|${id}`],
-        insertMessage: (msg) => { store.messages[`${msg.key.remoteJid}|${msg.key.id}`] = msg; },
+        loadMessage: async (jid, id) => {
+            let msg = store.messages[`${jid}|${id}`];
+            if (!msg) {
+                for (const k in store.messages) {
+                    if (k.endsWith(id)) {
+                        msg = store.messages[k];
+                        break;
+                    }
+                }
+            }
+            return msg;
+        },
+        insertMessage: (msg) => { 
+            const key = `${msg.key.remoteJid}|${msg.key.id}`;
+            const existing = store.messages[key];
+            
+            // BLINDAJE: Evita que los ecos de WhatsApp borren la llave secreta
+            if (existing && existing.message?.messageContextInfo?.messageSecret && msg.message) {
+                if (!msg.message.messageContextInfo) msg.message.messageContextInfo = {};
+                if (!msg.message.messageContextInfo.messageSecret) {
+                    msg.message.messageContextInfo.messageSecret = existing.message.messageContextInfo.messageSecret;
+                }
+            }
+            store.messages[key] = msg; 
+        },
         bind: (ev) => {
             ev.on('messages.upsert', (m) => {
                 m.messages.forEach(msg => store.insertMessage(msg));
@@ -112,16 +140,34 @@ const createSession = async (sessionId, isLegacy = false, req, res, getPairCode,
         syncFullHistory: syncMax || false,
         getMessage: async (key) => {
             if (store) {
-                const msg = await store.loadMessage(key?.remoteJid, key?.id);
+                let msg = await store.loadMessage(key?.remoteJid, key?.id);
+                if (!msg) {
+                    // Búsqueda profunda si el JID no coincide exactamente
+                    for (const k in store.messages) {
+                        if (k.endsWith(key?.id)) {
+                            msg = store.messages[k];
+                            break;
+                        }
+                    }
+                }
                 return msg?.message || undefined;
             }
-            return proto.Message.fromObject({});
+            return undefined; // Debe devolver undefined para que Baileys sepa que falló
         }
     };
 
     const wa = makeWASocket(waConfig);
 
     store.bind(wa.ev);
+
+    const originalSendMessage = wa.sendMessage;
+    wa.sendMessage = async (...args) => {
+        const sentMsg = await originalSendMessage.apply(wa, args);
+        if (sentMsg && sentMsg.key) {
+            store.insertMessage(sentMsg);
+        }
+        return sentMsg;
+    };
 
     sessions.set(sessionId, { ...wa, store, isLegacy });
     wa.ev.on('creds.update', saveCreds);
@@ -189,12 +235,51 @@ const createSession = async (sessionId, isLegacy = false, req, res, getPairCode,
         const session = getSession(sessionId);
 
         if (message?.key?.remoteJid !== 'status@broadcast' && m.type === 'notify') {
-            // FIX: Romper el bucle de dependencias (Lazy Loading)
             const { chatbotInit } = require('../loops/chatBot.js');
             const { webhookIncoming } = require('../functions/x.js');
 
-            if (!message.key.fromMe) chatbotInit(m, wa, sessionId, session);
+            if (!message.key.fromMe) {
+                if (message?.message?.pollUpdateMessage) {
+                    console.log("📥 Voto recibido. Delegando al motor actualizado de Baileys...");
+                } else {
+                    chatbotInit(m, wa, sessionId, session);
+                }
+            }
             webhookIncoming(message, sessionId, session);
+        }
+    });
+
+    wa.ev.on('messages.update', async (updates) => {
+        for (const update of updates) {
+            if (update.update?.pollUpdates && update.update.pollUpdates.length > 0) {
+                const pollData = update.update.pollUpdates[0];
+                if (pollData.vote) {
+                    console.log("✅ ¡VOTO DESCIFRADO NATIVAMENTE!");
+                    const { chatbotInit } = require('../loops/chatBot.js');
+                    const session = getSession(sessionId);
+                    
+                    const storedMsg = await store.loadMessage(update.key.remoteJid, update.key.id);
+                    if (storedMsg && storedMsg.message) {
+                        const meId = jidNormalizedUser(wa.user?.id);
+                        const pollMessageData = getAggregateVotesInPollMessage({
+                            message: storedMsg.message,
+                            pollUpdates: update.update.pollUpdates
+                        }, meId);
+
+                        const m = {
+                            messages: [{
+                                key: pollData.pollUpdateMessageKey,
+                                remoteJid: update.key.remoteJid,
+                                pushName: "Usuario",
+                                messageTimestamp: Math.floor(Date.now() / 1000),
+                                message: { pollUpdateMessage: {} }
+                            }],
+                            type: 'notify'
+                        };
+                        chatbotInit(m, wa, sessionId, session, pollMessageData);
+                    }
+                }
+            }
         }
     });
 };

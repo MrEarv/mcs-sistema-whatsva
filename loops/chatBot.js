@@ -118,86 +118,27 @@ async function convertMsg({ obj = {}, outgoing = false, pollMessage = "" }) {
             }
         }
     }
-    // for text message 
-    else if (obj?.message?.conversation && obj?.key?.remoteJid !== "status@broadcast" && obj?.key?.remoteJid) {
-        if (obj?.key?.remoteJid?.endsWith("@g.us")) {
-            return {
-                group: true,
-                type: "text",
-                msgId: obj?.key?.id,
-                remoteJid: obj?.key?.remoteJid,
-                msgContext: {
-                    text: obj?.message?.conversation
-                },
-                text: obj?.message?.conversation || "",
-                reaction: "",
-                timestamp: obj?.messageTimestamp || timestamp,
-                senderName: obj?.pushName,
-                status: "sent",
-                star: false,
-                route: outgoing ? 'outgoing' : "incoming",
-                context: ""
-            }
-        }
-        if (obj?.key?.remoteJid?.endsWith("@s.whatsapp.net")) {
-            return {
-                group: false,
-                type: "text",
-                msgId: obj?.key?.id,
-                remoteJid: obj?.key?.remoteJid,
-                msgContext: {
-                    text: obj?.message?.conversation
-                },
-                text: obj?.message?.conversation || "",
-                reaction: "",
-                timestamp: obj?.messageTimestamp || timestamp,
-                senderName: obj?.pushName,
-                status: "sent",
-                star: false,
-                route: outgoing ? 'outgoing' : "incoming",
-                context: ""
-            }
-        }
-    }
-    // for text for extended 
-    else if (!obj?.message?.extendedTextMessage?.contextInfo?.stanzaId && obj?.message?.extendedTextMessage?.text && obj?.key?.remoteJid !== "status@broadcast" && obj?.key?.remoteJid) {
-        if (obj?.key?.remoteJid?.endsWith("@g.us")) {
-            return {
-                group: true,
-                type: "text",
-                msgId: obj?.key?.id,
-                remoteJid: obj?.key?.remoteJid,
-                msgContext: {
-                    text: obj?.message?.extendedTextMessage?.text
-                },
-                text: obj?.message?.extendedTextMessage?.text || "",
-                reaction: "",
-                timestamp: obj?.messageTimestamp || timestamp,
-                senderName: obj?.pushName,
-                status: "sent",
-                star: false,
-                route: outgoing ? 'outgoing' : "incoming",
-                context: ""
-            }
-        }
-        if (obj?.key?.remoteJid?.endsWith("@s.whatsapp.net")) {
-            return {
-                group: false,
-                type: "text",
-                msgId: obj?.key?.id,
-                remoteJid: obj?.key?.remoteJid,
-                msgContext: {
-                    text: obj?.message?.extendedTextMessage?.text
-                },
-                text: obj?.message?.extendedTextMessage?.text || "",
-                reaction: "",
-                timestamp: obj?.messageTimestamp || timestamp,
-                senderName: obj?.pushName,
-                status: "sent",
-                star: false,
-                route: outgoing ? 'outgoing' : "incoming",
-                context: ""
-            }
+    // for text and extended text messages 
+    else if ((obj?.message?.conversation || obj?.message?.extendedTextMessage?.text) && obj?.key?.remoteJid !== "status@broadcast" && obj?.key?.remoteJid) {
+        
+        const textContent = obj?.message?.conversation || obj?.message?.extendedTextMessage?.text;
+        
+        return {
+            group: obj?.key?.remoteJid?.endsWith("@g.us"),
+            type: "text",
+            msgId: obj?.key?.id,
+            remoteJid: obj?.key?.remoteJid,
+            msgContext: {
+                text: textContent
+            },
+            text: textContent || "",
+            reaction: "",
+            timestamp: obj?.messageTimestamp || timestamp,
+            senderName: obj?.pushName || "Usuario",
+            status: "sent",
+            star: false,
+            route: outgoing ? 'outgoing' : "incoming",
+            context: ""
         }
     }
     // for video mesage 
@@ -750,7 +691,18 @@ async function makeObjs(msg, k) {
         }
     } else if (type === 'poll') {
 
-        const msgObj = k?.msgContent
+        const pollContent = k?.msgContent?.poll || k?.msgContent?.pollCreate || {}
+        const msgObj = {
+            poll: {
+                name: pollContent.name || k?.msgContent?.question || k?.data?.state?.question || '',
+                values: Array.isArray(pollContent.values)
+                    ? pollContent.values
+                    : (Array.isArray(pollContent.options)
+                        ? pollContent.options
+                        : (Array.isArray(k?.data?.state?.options) ? k.data.state.options : [])),
+                selectableCount: Number(pollContent.selectableCount) || 1
+            }
+        }
 
         const saveObj = {
             "group": false,
@@ -862,7 +814,7 @@ async function chatbotInit(m, wa, sessionId, session, pollMessage) {
         if (incomingText && !msg?.group) {
             const { uid, client_id } = decodeObject(sessionId)
 
-            if (checkPlan(uid)) {
+            if (await checkPlan(uid)) {
                 const chatbots = await query(`SELECT * FROM chatbot WHERE uid = ? AND active = ?`, [uid, 1]);
 
                 // console.log({

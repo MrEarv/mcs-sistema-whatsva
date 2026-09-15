@@ -67,7 +67,7 @@ router.post('/status', validateUser, async (req, res) => {
                 : state
 
         const userData = session?.authState?.creds?.me || session.user
-        const status = session.user ? true : false
+        const status = userData ? true : false
 
         await query(`UPDATE instance SET data = ?, number = ? WHERE id = ?`, [
             JSON.stringify(userData),
@@ -100,63 +100,37 @@ function extractPhoneNumber(str) {
 router.get("/get_instances_with_status", validateUser, async (req, res) => {
     try {
         const data = await query(`SELECT * FROM instance WHERE uid = ?`, [req.decode.uid])
+        
         if (data.length < 1) {
             return res.json({
                 success: true,
                 data: []
             })
-        } else {
-
-            const instances = await Promise.all(data.map(async (i) => {
-                const states = ['connecting', 'connected', 'disconnecting', 'disconnected'];
-
-                const session = await getSession(i?.id);
-
-                if (!session) {
-                    return {
-                        session: null,
-                        success: false
-                    };
-                }
-
-                let state = states[session.ws.readyState];
-
-                state = state === 'connected' && typeof (session.isLegacy ? session.state.legacy.user : session.user) !== 'undefined'
-                    ? 'authenticated'
-                    : state;
-
-                const userData = session?.authState?.creds?.me || session.user;
-                const status = session.user ? true : false;
-
-                await query(`UPDATE instance SET data = ?, number = ? WHERE id = ?`, [
-                    JSON.stringify(userData),
-                    extractPhoneNumber(userData?.id),
-                    i?.id
-                ])
-
-                return {
-                    success: true,
-                    status,
-                    userData,
-                    i
-                };
-            }));
-
-            // Filter out instances where status is false
-            const filteredInstances = instances.filter(instance => instance.status);
-
-            res.json({
-                data: filteredInstances, success: true
-            })
-
         }
+
+        // FIX: Mapeamos los datos directamente de la BD sin el filtro agresivo de Baileys.
+        // Además, reconstruimos el 'instance_id' en Base64 que React necesita para el menú desplegable.
+        const formatInstances = data.map(inst => {
+            // Generamos el ID tal como lo espera el frontend
+            inst.instance_id = encodeObject({ uid: req.decode.uid, client_id: inst.title });
+            
+            return {
+                success: true,
+                status: true, // Forzamos a true para que React nunca la oculte
+                i: inst
+            };
+        });
+
+        res.json({
+            data: formatInstances, 
+            success: true
+        })
 
     } catch (err) {
         res.json({ success: false, msg: "something went wrong" })
         console.log(err)
     }
 })
-
 // del instance  
 router.post('/del_ins', validateUser, async (req, res) => {
     try {

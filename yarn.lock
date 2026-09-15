@@ -5741,7 +5741,7 @@ serve-static@1.15.0:
   dependencies:
     "@adiwajshing/keyed-db" "^0.2.4"
     "@open-wa/wa-automate" "^4.72.5"
-    "@whiskeysockets/baileys" "^6.7.18"
+    "@whiskeysockets/baileys" "^7.0.0-rc14"
     bcrypt "5.0.1"
     cors "^2.8.5"
     crypto "^1.0.1"

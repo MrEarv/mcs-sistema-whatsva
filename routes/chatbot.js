@@ -11,25 +11,25 @@ const csv = require('csv-parser');
 const mime = require('mime-types')
 const { checkPlanExpiry, checkChatbotPlan } = require('../middlewares/planValidator.js')
 
+// Helper universal para desempacar los datos que manda React
+const extractPayload = (req) => req.body?.data?.payload || req.body?.data || req.body;
+
 // add bot 
 router.post('/add_bot', validateUser, checkPlanExpiry, checkChatbotPlan, async (req, res) => {
     try {
-        const { title, for_all, prevent_book_id, flow, instance_id } = req.body
+        const payload = extractPayload(req);
+        const { title, for_all, prevent_book_id, flow, instance_id } = payload;
 
         if (!title || !flow || !instance_id) {
-            return res.json({
-                msg: "Please select the required fields"
-            })
+            return res.json({ success: false, msg: "Please select the required fields" })
         }
 
         if (!for_all) {
             if (!prevent_book_id) {
-                return res.json({
-                    msg: "Your forgot to select prevent phonebook"
-                })
+                return res.json({ success: false, msg: "Your forgot to select prevent phonebook" })
             }
-
         }
+
         // check existing bot 
         const getBot = await query(`SELECT * FROM chatbot WHERE uid = ? AND instance_id = ?`, [
             req.decode.uid,
@@ -37,7 +37,7 @@ router.post('/add_bot', validateUser, checkPlanExpiry, checkChatbotPlan, async (
         ])
 
         if (getBot.length > 0) {
-            return res.json({ msg: "This instance is already busy with another chtbot" })
+            return res.json({ success: false, msg: "This instance is already busy with another chatbot" })
         }
 
         await query(`INSERT INTO chatbot (uid, title, for_all, prevent_book_id, flow, active, instance_id) VALUES (?,?,?,?,?,?,?)`, [
@@ -50,10 +50,7 @@ router.post('/add_bot', validateUser, checkPlanExpiry, checkChatbotPlan, async (
             instance_id
         ])
 
-        res.json({
-            success: true,
-            msg: "Chatbot was added"
-        })
+        res.json({ success: true, msg: "Chatbot was added" })
 
     } catch (err) {
         res.json({ success: false, msg: "something went wrong", err })
@@ -64,22 +61,17 @@ router.post('/add_bot', validateUser, checkPlanExpiry, checkChatbotPlan, async (
 // update bot 
 router.post('/update_bot', validateUser, checkPlanExpiry, checkChatbotPlan, async (req, res) => {
     try {
-        const { title, for_all, prevent_book_id, flow, instance_id, id } = req.body
-
+        const payload = extractPayload(req);
+        const { title, for_all, prevent_book_id, flow, instance_id, id } = payload;
 
         if (!title || !flow || !instance_id) {
-            return res.json({
-                msg: "Please select the required fields"
-            })
+            return res.json({ success: false, msg: "Please select the required fields" })
         }
 
         if (!for_all) {
             if (!prevent_book_id) {
-                return res.json({
-                    msg: "Your forgot to select prevent phonebook"
-                })
+                return res.json({ success: false, msg: "Your forgot to select prevent phonebook" })
             }
-
         }
 
         // check existing bot 
@@ -89,11 +81,10 @@ router.post('/update_bot', validateUser, checkPlanExpiry, checkChatbotPlan, asyn
         ])
 
         if (getBot.length > 0 && parseFloat(id) !== parseFloat(getBot[0]?.id)) {
-            return res.json({ msg: "This instance is already busy with another chtbot" })
+            return res.json({ success: false, msg: "This instance is already busy with another chatbot" })
         }
 
-        await query(`UPDATE chatbot SET title = ?, for_all = ?, prevent_book_id = ?, flow = ?,
-        instance_id = ? WHERE id = ? AND uid = ?`, [
+        await query(`UPDATE chatbot SET title = ?, for_all = ?, prevent_book_id = ?, flow = ?, instance_id = ? WHERE id = ? AND uid = ?`, [
             title,
             for_all ? 1 : 0,
             prevent_book_id,
@@ -103,10 +94,7 @@ router.post('/update_bot', validateUser, checkPlanExpiry, checkChatbotPlan, asyn
             req.decode.uid
         ])
 
-        res.json({
-            msg: "Chatbot was updated",
-            success: true
-        })
+        res.json({ msg: "Chatbot was updated", success: true })
 
     } catch (err) {
         res.json({ success: false, msg: "something went wrong", err })
@@ -129,10 +117,11 @@ router.get('/get_mine', validateUser, async (req, res) => {
 // change bot status 
 router.post('/change_bot_status', validateUser, checkPlanExpiry, checkChatbotPlan, async (req, res) => {
     try {
-        const { botId, status } = req.body
+        const payload = extractPayload(req);
+        const { botId, status } = payload;
 
         if (!botId) {
-            return res.json({ msg: "Invalid request found" })
+            return res.json({ success: false, msg: "Invalid request found" })
         }
 
         await query(`UPDATE chatbot SET active = ? WHERE id = ? AND uid = ?`, [
@@ -152,13 +141,12 @@ router.post('/change_bot_status', validateUser, checkPlanExpiry, checkChatbotPla
 // del bot 
 router.post('/del_bot', validateUser, async (req, res) => {
     try {
-        const { id } = req.body
+        const payload = extractPayload(req);
+        const { id } = payload;
+
         await query(`DELETE FROM chatbot WHERE id = ? AND uid = ?`, [id, req.decode.uid])
 
-        res.json({
-            msg: "Chatbot was deleted",
-            success: true
-        })
+        res.json({ msg: "Chatbot was deleted", success: true })
 
     } catch (err) {
         res.json({ success: false, msg: "something went wrong", err })

@@ -26,12 +26,11 @@ router.get('/poll', async (req, res) => {
         const sid = "eyJ1aWQiOiJOQXhkY0loTmI0cVlJUUJYd2VSejJ0N2d3V3h2ZUZFaSIsImNsaWVudF9pZCI6ImEifQ=="
         const session = await getSession(sid)
 
-        // 🔹 CAMBIO 1: en Baileys v6 ya no se usa { poll: {...} }
-        // ahora se usa { pollCreate: {...} }
+        // Baileys espera el formato público { poll: { values: [...] } }.
         const send = await sendMessage(session, '918430088300@s.whatsapp.net', {
-            pollCreate: {
+            poll: {
                 name: "pollName",
-                options: ["option1", "option2", "option3"],
+                values: ["option1", "option2", "option3"],
                 selectableCount: 1
             }
         })

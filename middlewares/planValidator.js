@@ -64,18 +64,17 @@ const checkPhonebookContactLimit = async (req, res, next) => {
 const checkChatbotPlan = async (req, res, next) => {
     try {
         const plan = req.plan
-        console.log(req.plan)
-        console.log(plan)
-        if (parseInt(plan?.chatbot) > 0) {
+        if (parseInt(plan?.chatbot) > 0 || parseInt(plan?.allow_chatbot) > 0) {
             next()
         } else {
             return res.json({
+                success: false,
                 msg: "Your current plan does not allow you to make a chatbot"
             })
         }
     } catch (err) {
         console.log(err)
-        res.json({ msg: "server error", err })
+        res.json({success: false, msg: "server error", err })
     }
 }
 

@@ -18,10 +18,10 @@ const hora = new Date().toLocaleTimeString();
 router.post('/add_flow', validateUser, checkPlanExpiry, checkChatbotPlan, async (req, res) => {
     try {
         console.log("Hey")
-        const { title, nodes, edges, flowId } = req.body
+        const { title, nodes, edges, flowId } = req.body.data.payload
 
         if (!title) {
-            return req.json({ success: false, msg: "Please give a title to the flow" })
+            return res.json({ success: false, msg: "Please give a title to the flow" })
         }
 
         if (!nodes || !edges || !flowId) {
@@ -38,7 +38,7 @@ router.post('/add_flow', validateUser, checkPlanExpiry, checkChatbotPlan, async 
         await writeJsonToFile(edgepath, edges)
 
         if (checkExisted.length > 0) {
-            await query(`UPDATE flow SEt title = ? WHERE flow_id = ?`, [title, flowId])
+            await query(`UPDATE flow SET title = ? WHERE flow_id = ?`, [title, flowId])
         } else {
             await query(`INSERT INTO flow (uid, flow_id, title) VALUES (?,?,?)`, [
                 req.decode.uid,
@@ -74,7 +74,7 @@ router.get('/get_mine', validateUser, async (req, res) => {
 // get flow using flow id 
 router.post("/get_by_flow_id", validateUser, async (req, res) => {
     try {
-        const { flowId } = req.body
+        const { flowId } = req.body.data
 
         if (!flowId) {
             return res.json({ success: false, msg: "Flow id missing" })
@@ -86,7 +86,7 @@ router.post("/get_by_flow_id", validateUser, async (req, res) => {
         const nodes = readJsonFromFile(nodePath)
         const edges = readJsonFromFile(edgePath)
 
-        res.json({ nodes, edges, success: true })
+        res.json({ data: { nodes, edges }, success: true })
 
     } catch (err) {
         res.json({ success: false, msg: "something went wrong" })
