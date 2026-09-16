@@ -692,21 +692,21 @@ async function makeObjs(msg, k) {
     } else if (type === 'poll') {
 
         const pollContent = k?.msgContent?.poll || k?.msgContent?.pollCreate || {}
+        const question = pollContent.name || k?.msgContent?.question || k?.data?.state?.question || ''
+        const options = Array.isArray(pollContent.values)
+            ? pollContent.values
+            : (Array.isArray(pollContent.options)
+                ? pollContent.options
+                : (Array.isArray(k?.data?.state?.options) ? k.data.state.options : []))
         const msgObj = {
-            poll: {
-                name: pollContent.name || k?.msgContent?.question || k?.data?.state?.question || '',
-                values: Array.isArray(pollContent.values)
-                    ? pollContent.values
-                    : (Array.isArray(pollContent.options)
-                        ? pollContent.options
-                        : (Array.isArray(k?.data?.state?.options) ? k.data.state.options : [])),
-                selectableCount: Number(pollContent.selectableCount) || 1
-            }
+            text: [question, ...options.map((option, index) => `${index + 1}. ${option}`)]
+                .filter(Boolean)
+                .join('\n')
         }
 
         const saveObj = {
             "group": false,
-            "type": "poll",
+            "type": "text",
             "msgId": "",
             "remoteJid": msg?.remoteJid,
             "msgContext": msgObj,

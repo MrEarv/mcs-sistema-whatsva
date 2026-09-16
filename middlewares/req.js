@@ -7,11 +7,6 @@ const {
     useMultiFileAuthState,
     downloadMediaMessage,
     getUrlInfo,
-    proto,
-    decryptPollVote,
-    getAggregateVotesInPollMessage,
-    getKeyAuthor,
-    jidNormalizedUser,
   } = require('@whiskeysockets/baileys');
 const { toDataURL } = require('qrcode');
 const dirName = require('../dirname.js');
@@ -238,23 +233,19 @@ const createSession = async (sessionId, isLegacy = false, req, res, getPairCode,
             const { chatbotInit } = require('../loops/chatBot.js');
             const { webhookIncoming } = require('../functions/x.js');
 
-            if (!message.key.fromMe) {
-                if (message?.message?.pollUpdateMessage) {
-                    console.log("📥 Voto recibido. Delegando al motor actualizado de Baileys...");
-                } else {
-                    chatbotInit(m, wa, sessionId, session);
-                }
-            }
+            if (!message.key.fromMe) chatbotInit(m, wa, sessionId, session);
             webhookIncoming(message, sessionId, session);
         }
     });
 
+    /* Código antiguo de encuestas interactivas de Baileys. Las encuestas ahora
+       se envían como texto plano y este listener ya no se utiliza.
+       
     wa.ev.on('messages.update', async (updates) => {
         for (const update of updates) {
             if (update.update?.pollUpdates && update.update.pollUpdates.length > 0) {
                 const pollData = update.update.pollUpdates[0];
                 if (pollData.vote) {
-                    console.log("✅ ¡VOTO DESCIFRADO NATIVAMENTE!");
                     const { chatbotInit } = require('../loops/chatBot.js');
                     const session = getSession(sessionId);
                     
@@ -282,6 +273,7 @@ const createSession = async (sessionId, isLegacy = false, req, res, getPairCode,
             }
         }
     });
+    */
 };
 
 const deleteDirectory = (directoryPath) => {
