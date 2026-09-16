@@ -2,6 +2,7 @@ const { decodeObject, daysDiff, readJsonFromFile, encodeChatId, removeNumberAfte
 const { query } = require('../database/dbpromise');
 const { sendMedia, sendTextMsg } = require("../functions/x");
 const { delay } = require("@whiskeysockets/baileys");
+const userStates = new Map(); // Memoria contextual: rastrea en qué nodo va cada usuario
 
 function extractVoters(options) {
     // Check if options is a valid array
@@ -412,22 +413,35 @@ async function convertMsg({ obj = {}, outgoing = false, pollMessage = "" }) {
         return null
     }
 }
+// funcion findtargetNodes fusionada con getreply
+function getReply(nodes, edges, incomingWord, currentUserState) {
+    let matchingEdges = edges.filter(edge => edge.sourceHandle?.toLowerCase() == incomingWord?.toLowerCase());
 
-function findTargetNodes(nodes, edges, incomingWord) {
-    const matchingEdges = edges.filter(edge => edge.sourceHandle?.toLowerCase() == incomingWord?.toLowerCase());
-    const targetNodeIds = matchingEdges.map(edge => edge.target);
-    const targetNodes = nodes.filter(node => targetNodeIds.includes(node.id));
-    return targetNodes;
-}
-
-function getReply(nodes, edges, incomingWord) {
-    const getNormal = findTargetNodes(nodes, edges, incomingWord)
-    if (getNormal.length > 0) {
-        return getNormal
+    if (currentUserState && currentUserState.length > 0) {
+        const contextualEdges = matchingEdges.filter(edge => currentUserState.includes(edge.source));
+        
+        if (contextualEdges.length > 0) {
+            matchingEdges = contextualEdges;
+        } else {
+            // Fallback local: Si se equivoca, buscamos si el nodo actual tiene salida "{{OTHER_MSG}}"
+            const otherEdges = edges.filter(edge => edge.sourceHandle?.toLowerCase() === "{{other_msg}}" && currentUserState.includes(edge.source));
+            if (otherEdges.length > 0) {
+                matchingEdges = otherEdges;
+            } else {
+                return []; 
+            }
+        }
     } else {
-        const getOther = findTargetNodes(nodes, edges, "{{OTHER_MSG}}")
-        return getOther
+       
+        // Identificamos los nodos raíz (los que no tienen a nadie apuntándoles)
+        const targetNodeIds = edges.map(e => e.target);
+        const rootNodeIds = nodes.filter(n => !targetNodeIds.includes(n.id)).map(n => n.id);
+        
+        matchingEdges = matchingEdges.filter(edge => rootNodeIds.includes(edge.source));
     }
+
+    let finalTargetIds = matchingEdges.map(edge => edge.target);
+    return nodes.filter(node => finalTargetIds.includes(node.id));
 }
 
 async function checkPlan(uid) {
@@ -737,7 +751,7 @@ async function makeObjs(msg, k) {
 
 async function runChatbot(i, msg, uid, client_id, m, sessionId, session) {
     const chatbot = i;
-    const flow = JSON.parse(chatbot?.flow)
+    const flow = JSON.parse(chatbot?.flow);
 
     const nodePath = `${__dirname}/../flow-json/nodes/${uid}/${flow?.flow_id}.json`;
     const edgePath = `${__dirname}/../flow-json/edges/${uid}/${flow?.flow_id}.json`;
@@ -745,55 +759,49 @@ async function runChatbot(i, msg, uid, client_id, m, sessionId, session) {
     const nodes = readJsonFromFile(nodePath);
     const edges = readJsonFromFile(edgePath);
 
+    const chatUserKey = `${uid}_${msg?.remoteJid}`;
+    const currentUserState = userStates.get(chatUserKey);
+
     if (nodes.length > 0 && edges.length > 0) {
-        const answer = getReply(nodes, edges, msg?.text)
+        const answer = getReply(nodes, edges, msg?.text, currentUserState);
+        
         if (answer.length > 0) {
+            // Revisamos si los nodos de respuesta tienen algún camino de salida (flechas)
+            const hasNextSteps = edges.some(edge => answer.some(node => node.id === edge.source));
+            
+            if (hasNextSteps) {
+                // Si el flujo continúa, guardamos en qué nodo se quedó
+                userStates.set(chatUserKey, answer.map(node => node.id));
+            } else {
+                // Si es el final del flujo borramos la memoria para reiniciar el bot
+                userStates.delete(chatUserKey);
+            }
 
             for (const k of answer) {
-
                 const chatId = encodeChatId({
                     ins: sessionId,
                     grp: msg?.remoteJid?.endsWith("@g.us") ? true : false,
                     num: msg?.remoteJid?.endsWith("@s.whatsapp.net") ?
                         removeNumberAfterColon(msg?.remoteJid)?.replace("@s.whatsapp.net", "") :
                         removeNumberAfterColon(msg?.remoteJid)?.replace("@g.us", "")
-                })
+                });
 
-                const { msgObj, saveObj, sendObj } = await makeObjs(msg, k)
+                const { msgObj, saveObj, sendObj } = await makeObjs(msg, k);
 
                 if (saveObj?.type === "text" || saveObj?.type === "poll") {
-
-                    await delay(1000)
-
+                    await delay(1000);
                     const resp = await sendTextMsg({
-                        uid,
-                        msgObj,
-                        toJid: msg?.remoteJid,
-                        saveObj,
-                        chatId,
-                        session,
-                        sessionId
-                    })
-
+                        uid, msgObj, toJid: msg?.remoteJid, saveObj, chatId, session, sessionId
+                    });
                 } else {
                     if (saveObj?.type) {
-                        await delay(1000)
+                        await delay(1000);
                         const resp = await sendMedia({
-                            uid,
-                            msgObj,
-                            toJid: msg?.remoteJid,
-                            saveObj,
-                            chatId,
-                            session,
-                            sessionId,
-                            sendObj
-                        })
-
+                            uid, msgObj, toJid: msg?.remoteJid, saveObj, chatId, session, sessionId, sendObj
+                        });
                     }
                 }
-
             }
-
         }
     }
 }
