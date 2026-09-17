@@ -26,7 +26,6 @@ router.get('/poll', async (req, res) => {
         const sid = "eyJ1aWQiOiJOQXhkY0loTmI0cVlJUUJYd2VSejJ0N2d3V3h2ZUZFaSIsImNsaWVudF9pZCI6ImEifQ=="
         const session = await getSession(sid)
 
-        // Baileys espera el formato público { poll: { values: [...] } }.
         const send = await sendMessage(session, '918430088300@s.whatsapp.net', {
             poll: {
                 name: "pollName",
@@ -35,13 +34,10 @@ router.get('/poll', async (req, res) => {
             }
         })
 
-        // 🔹 CAMBIO 2: se agregó return para asegurar que solo
-        // se envía UNA respuesta en la petición
+
         return res.json({ success: true, send })
     } catch (err) {
         console.error(err)
-        // 🔹 CAMBIO 3: también aquí se puso return para evitar
-        // doble respuesta en caso de error
         return res.json({ success: false, msg: "something went wrong", err })
     }
 })
@@ -161,8 +157,8 @@ router.post('/get_convo', validateUser, async (req, res) => {
             1,
             chatId
         ])
-
-        const data = readJSONFile(filePath, 100)
+        // cargan 500 mensajes, no se si sean muchos pero 100 anterior era poco
+        const data = readJSONFile(filePath, 500)
         res.json({ data, success: true })
     } catch (err) {
         console.log(err);
