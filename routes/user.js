@@ -190,10 +190,11 @@ router.get('/get_instance', validateUser, async (req, res) => {
 
 router.post('/change_chat_ticket_status', validateUser, async (req, res) => {
     try {
-        const { status, chatId } = req.body
+        const payload = req.body?.data?.body || req.body?.data || req.body;
+        const { status, chatId } = payload;
 
         if (!status || !chatId) {
-            return res.json({ msg: "invalid request" })
+            return res.json({ success: false, msg: "invalid request" })
         }
 
         await query(`UPDATE chats SET chat_status = ? WHERE chat_id = ?`, [
@@ -208,7 +209,7 @@ router.post('/change_chat_ticket_status', validateUser, async (req, res) => {
 
     } catch (err) {
         console.log(err);
-        res.json({ err, success: false, msg: "Something went wrong", err });
+        res.json({ err, success: false, msg: "Something went wrong" });
     }
 })
 
