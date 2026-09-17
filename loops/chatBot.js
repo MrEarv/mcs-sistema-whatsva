@@ -2,8 +2,10 @@ const { decodeObject, daysDiff, readJsonFromFile, encodeChatId, removeNumberAfte
 const { query } = require('../database/dbpromise');
 const { sendMedia, sendTextMsg } = require("../functions/x");
 const { delay } = require("@whiskeysockets/baileys");
-const userStates = new Map(); // Memoria contextual: rastrea en qué nodo va cada usuario
-
+// Memoria global mejorada
+if (!global.userStates) {
+    global.userStates = new Map();
+}
 function extractVoters(options) {
     // Check if options is a valid array
     if (!Array.isArray(options)) {
@@ -415,16 +417,22 @@ async function convertMsg({ obj = {}, outgoing = false, pollMessage = "" }) {
 }
 // funcion findtargetNodes fusionada con getreply
 function getReply(nodes, edges, incomingWord, currentUserState) {
-    let matchingEdges = edges.filter(edge => edge.sourceHandle?.toLowerCase() == incomingWord?.toLowerCase());
+    const safeWord = String(incomingWord || "").trim().toLowerCase();
+    
+    let matchingEdges = edges.filter(edge => {
+        const handle = String(edge.sourceHandle || "").trim().toLowerCase();
+        return handle === safeWord;
+    });
 
     if (currentUserState && currentUserState.length > 0) {
-        const contextualEdges = matchingEdges.filter(edge => currentUserState.includes(edge.source));
-        
+        const contextualEdges = matchingEdges.filter(edge => currentUserState.includes(String(edge.source)));
         if (contextualEdges.length > 0) {
             matchingEdges = contextualEdges;
         } else {
-            // Fallback local: Si se equivoca, buscamos si el nodo actual tiene salida "{{OTHER_MSG}}"
-            const otherEdges = edges.filter(edge => edge.sourceHandle?.toLowerCase() === "{{other_msg}}" && currentUserState.includes(edge.source));
+            const otherEdges = edges.filter(edge => {
+                const handle = String(edge.sourceHandle || "").trim().toLowerCase();
+                return handle === "{{other_msg}}" && currentUserState.includes(String(edge.source));
+            });
             if (otherEdges.length > 0) {
                 matchingEdges = otherEdges;
             } else {
@@ -432,16 +440,14 @@ function getReply(nodes, edges, incomingWord, currentUserState) {
             }
         }
     } else {
-       
-        // Identificamos los nodos raíz (los que no tienen a nadie apuntándoles)
-        const targetNodeIds = edges.map(e => e.target);
-        const rootNodeIds = nodes.filter(n => !targetNodeIds.includes(n.id)).map(n => n.id);
+        const targetIds = edges.map(e => String(e.target));
+        const rootIds = nodes.filter(n => !targetIds.includes(String(n.id))).map(n => String(n.id));
         
-        matchingEdges = matchingEdges.filter(edge => rootNodeIds.includes(edge.source));
+        matchingEdges = matchingEdges.filter(edge => rootIds.includes(String(edge.source)));
     }
 
-    let finalTargetIds = matchingEdges.map(edge => edge.target);
-    return nodes.filter(node => finalTargetIds.includes(node.id));
+    const finalTargetIds = matchingEdges.map(edge => String(edge.target));
+    return nodes.filter(node => finalTargetIds.includes(String(node.id)));
 }
 
 async function checkPlan(uid) {
@@ -760,21 +766,18 @@ async function runChatbot(i, msg, uid, client_id, m, sessionId, session) {
     const edges = readJsonFromFile(edgePath);
 
     const chatUserKey = `${uid}_${msg?.remoteJid}`;
-    const currentUserState = userStates.get(chatUserKey);
+    const currentUserState = global.userStates.get(chatUserKey);
 
     if (nodes.length > 0 && edges.length > 0) {
         const answer = getReply(nodes, edges, msg?.text, currentUserState);
         
         if (answer.length > 0) {
-            // Revisamos si los nodos de respuesta tienen algún camino de salida (flechas)
-            const hasNextSteps = edges.some(edge => answer.some(node => node.id === edge.source));
+            const hasNextSteps = edges.some(edge => answer.some(node => String(node.id) === String(edge.source)));
             
             if (hasNextSteps) {
-                // Si el flujo continúa, guardamos en qué nodo se quedó
-                userStates.set(chatUserKey, answer.map(node => node.id));
+                global.userStates.set(chatUserKey, answer.map(node => String(node.id)));
             } else {
-                // Si es el final del flujo borramos la memoria para reiniciar el bot
-                userStates.delete(chatUserKey);
+                global.userStates.delete(chatUserKey);
             }
 
             for (const k of answer) {
