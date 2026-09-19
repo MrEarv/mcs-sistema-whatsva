@@ -31,7 +31,7 @@ router.post('/add_bot', validateUser, checkPlanExpiry, checkChatbotPlan, async (
         }
 
         // check existing bot 
-        const getBot = await query(`SELECT * FROM chatbot WHERE uid = ? AND instance_id = ?`, [
+        const getBot = await query(`SELECT * FROM chatbot WHERE uid = ? AND instance_id = ? AND active = 1`, [
             req.decode.uid,
             instance_id
         ])
@@ -75,7 +75,7 @@ router.post('/update_bot', validateUser, checkPlanExpiry, checkChatbotPlan, asyn
         }
 
         // check existing bot 
-        const getBot = await query(`SELECT * FROM chatbot WHERE uid = ? AND instance_id = ?`, [
+        const getBot = await query(`SELECT * FROM chatbot WHERE uid = ? AND instance_id = ? AND active = 1`, [
             req.decode.uid,
             instance_id
         ])
