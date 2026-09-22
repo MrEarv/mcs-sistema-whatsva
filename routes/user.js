@@ -610,7 +610,7 @@ router.post('/update_profile', validateUser, async (req, res) => {
     try {
         const { newPassword, name, mobile_with_country_code, email } = req.body
 
-        if (!name || !mobile || !email) {
+        if (!name || !mobile_with_country_code || !email) {
             return res.json({ msg: "Name, Mobile, Email are required fields" })
         }
 
@@ -1075,13 +1075,24 @@ router.post('/update_contact_number', validateUser, async (req, res) => {
         const {
             name,
             mobile_with_country_code,
+            var1,
+            var2,
+            var3,
+            var4,
+            var5,
+            id,
             var_one,
             var_two,
             var_three,
             var_four,
-            var_five,
-            id
+            var_five
         } = req.body
+
+        const finalVar1 = var1 ?? var_one ?? ""
+        const finalVar2 = var2 ?? var_two ?? ""
+        const finalVar3 = var3 ?? var_three ?? ""
+        const finalVar4 = var4 ?? var_four ?? ""
+        const finalVar5 = var5 ?? var_five ?? ""
 
         if (!name || !mobile_with_country_code) {
             return res.json({
@@ -1101,11 +1112,11 @@ router.post('/update_contact_number', validateUser, async (req, res) => {
             WHERE id = ?`, [
             name,
             mobile_with_country_code,
-            var_one,
-            var_two,
-            var_three,
-            var_four,
-            var_five,
+            finalVar1,
+            finalVar2,
+            finalVar3,
+            finalVar4,
+            finalVar5,
             id
         ])
 
