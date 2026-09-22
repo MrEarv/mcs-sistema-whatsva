@@ -1,6 +1,7 @@
 const { query } = require('../database/dbpromise');
-const { decodeObject, mergeVariables } = require('../functions/function');
+const { decodeObject, mergeVariables, encodeChatId, addObjectToFile } = require('../functions/function');
 const { getSession, isExists } = require('../middlewares/req');
+const { getIOInstance } = require('../socket');
 const moment = require('moment-timezone');
 
 function getRandomElementFromArray(array) {
@@ -17,7 +18,7 @@ function hasDatePassedInTimezone(timezone, datetimeFromMySQL) {
         const currentMoment = moment.tz(timezone);
         return momentDate.isBefore(currentMoment);
     } catch (e) {
-        return true; // Si hay error de zona horaria, liberamos el envío
+        return true; 
     }
 }
 
@@ -25,7 +26,6 @@ function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Adaptamos el lector para que acepte tanto plantillas antiguas como las de nuestro nuevo Creador de Flujos
 function resolveTemplet(templet) {
     if (!templet) return null;
     const type = templet.type;
@@ -79,16 +79,13 @@ async function processPendingBroadcasts() {
     let processedAny = false;
 
     for (const b of broadcasts) {
-        // 1. Validar el horario
         if (b.schedule && !hasDatePassedInTimezone(b.timezone, b.schedule)) {
             continue; 
         }
 
-        // 2. Extraer un solo log pendiente para esta campaña
         const pendingLogs = await query(`SELECT * FROM broadcast_log WHERE broadcast_id = ? AND delivery_status = ? LIMIT 1`, [b.broadcast_id, "PENDING"]);
 
         if (pendingLogs.length === 0) {
-            // Si ya no hay logs pendientes, la campaña terminó
             await query(`UPDATE broadcast SET status = ? WHERE broadcast_id = ?`, ["COMPLETED", b.broadcast_id]);
             console.log(`\n✅ [Broadcast] Campaña "${b.title}" finalizada con éxito.`);
             continue;
@@ -100,7 +97,6 @@ async function processPendingBroadcasts() {
         try {
             console.log(`\n⏳ [Broadcast] Procesando envío a: ${logObj.send_to}...`);
 
-            // 3. Obtener la sesión de WhatsApp
             const insArr = JSON.parse(b.instance_id);
             const instanceId = getRandomElementFromArray(insArr);
             const session = await getSession(instanceId);
@@ -111,23 +107,18 @@ async function processPendingBroadcasts() {
                 continue;
             }
 
-// 4. Limpiar el número de teléfono
             const rawNumber = String(logObj.send_to).replace(/\D/g, '');
             const jid = `${rawNumber}@s.whatsapp.net`;
 
-            // 5. Validar existencia y extraer el JID REAL (La magia para México 52 vs 521)
             const [waCheck] = await session.onWhatsApp(jid);
-            
             if (!waCheck || !waCheck.exists) {
                 console.log(`❌ [Broadcast] El número ${rawNumber} no tiene WhatsApp.`);
                 await query(`UPDATE broadcast_log SET delivery_status = ?, err = ? WHERE id = ?`, ["Number NA", "Not on WA", logObj.id]);
                 continue;
             }
 
-            // WhatsApp nos corrige el número internamente (le agrega el 1 si es necesario)
             const realJid = waCheck.jid; 
 
-            // 6. Preparar la plantilla y las variables
             const templet = JSON.parse(b.templet);
             const actualObj = resolveTemplet(templet);
             
@@ -144,7 +135,6 @@ async function processPendingBroadcasts() {
                 type: templet.type?.toLowerCase()
             });
 
-            // 7. Enviar el mensaje usando el número corregido (realJid)
             const send = await session.sendMessage(realJid, returnObjWithVariables);
 
             if (send?.key?.id) {
@@ -153,6 +143,94 @@ async function processPendingBroadcasts() {
                     "sent", send.key.id, client_id, logObj.id
                 ]);
                 console.log(`✅ [Broadcast] Mensaje entregado con éxito a ${rawNumber}`);
+
+                try {
+                    const msgType = templet.type?.toLowerCase() === 'doc' ? 'document' : templet.type?.toLowerCase();
+                    const timestamp = send.messageTimestamp?.low || Math.floor(Date.now() / 1000);
+
+                    const allChats = await query(`SELECT * FROM chats WHERE uid = ? AND instance_id = ?`, [b.uid, instanceId]);
+                    const last10 = rawNumber.slice(-10);
+                    
+                    let checkChat = null;
+                    
+                    for (const c of allChats) {
+                        try {
+                            if (c.chat_id) {
+                                const decodedStr = Buffer.from(c.chat_id, 'base64').toString('utf-8');
+                                const decodedObj = JSON.parse(decodedStr);
+                                if (decodedObj && decodedObj.num && String(decodedObj.num).includes(last10)) {
+                                    checkChat = c;
+                                    break;
+                                }
+                            }
+                        } catch(e) {} 
+                        
+                        // B. Respaldo: Buscar en columnas normales por si es un chat nuevo
+                        if ((c.sender_jid && String(c.sender_jid).includes(last10)) || 
+                            (c.sender_mobile && String(c.sender_mobile).includes(last10))) {
+                            checkChat = c;
+                            break;
+                        }
+                    }
+
+                    let chatId;
+                    let targetJid = realJid;
+
+                    if (checkChat) {
+                        chatId = checkChat.chat_id;
+                        targetJid = checkChat.sender_jid || realJid;
+                    } else {
+                        chatId = encodeChatId({ ins: instanceId, grp: false, num: realJid.replace('@s.whatsapp.net', '') });
+                    }
+                    const realContactName = contactData.name || rawNumber;
+
+                    const saveObj = {
+                        "group": false,
+                        "type": msgType || "text",
+                        "msgId": send.key.id,
+                        "remoteJid": targetJid,
+                        "msgContext": returnObjWithVariables,
+                        "reaction": "",
+                        "timestamp": timestamp,
+                        // ✅ CORRECCIÓN: Usamos el nombre del contacto, no el de la campaña
+                        "senderName": realContactName, 
+                        "status": "sent",
+                        "star": false,
+                        "route": "outgoing",
+                        "context": ""
+                    };
+
+                    // 2. Guardar en JSON (Disco duro)
+                    const chatPath = `${__dirname}/../conversations/inbox/${b.uid}/${chatId}.json`;
+                    addObjectToFile(saveObj, chatPath);
+
+                    // 3. Actualizar SQL para mover el chat a la cima
+                    if (checkChat) {
+                        await query(`UPDATE chats SET last_message_came = ?, last_message = ? WHERE id = ?`, [
+                            timestamp, JSON.stringify(saveObj), checkChat.id
+                        ]);
+                    } else {
+                        // ✅ CORRECCIÓN: Al crear un chat nuevo, le ponemos el nombre real del contacto
+                        await query(`INSERT INTO chats (chat_id, uid, last_message_came, sender_name, sender_mobile, sender_jid, last_message, instance_id) VALUES (?,?,?,?,?,?,?,?)`, [
+                            chatId, b.uid, timestamp, realContactName, realJid.replace('@s.whatsapp.net', ''), realJid, JSON.stringify(saveObj), instanceId
+                        ]);
+                    }
+
+                    // 4. ACTUALIZACIÓN EN TIEMPO REAL (SOCKET)
+                    const io = getIOInstance();
+                    if (io) {
+                        const rooms = await query(`SELECT * FROM rooms WHERE uid = ?`, [b.uid]);
+                        if (rooms.length > 0) {
+                            const socketId = rooms[0].socket_id;
+                            const updatedChats = await query(`SELECT * FROM chats WHERE uid = ? AND instance_id = ? ORDER BY last_message_came DESC`, [b.uid, instanceId]);
+                            io.to(socketId).emit('update_conversations', { chats: updatedChats, notificationOff: true });
+                            io.to(socketId).emit('push_new_msg', { msg: saveObj, chatId: chatId, sessionId: instanceId });
+                        }
+                    }
+                } catch(inboxErr) {
+                    console.error(`⚠️ [Broadcast] Error al clonar en bandeja:`, inboxErr);
+                }
+
             } else {
                 console.log(`❌ [Broadcast] Fallo al enviar mensaje a ${rawNumber}`);
                 await query(`UPDATE broadcast_log SET delivery_status = ?, err = ? WHERE id = ?`, [
@@ -167,7 +245,6 @@ async function processPendingBroadcasts() {
             ]);
         }
 
-        // 8. Retraso aleatorio para evitar baneos
         const dFrom = b.delay_from || 10;
         const dTo = b.delay_to || 30;
         const randomSecs = Math.floor(Math.random() * (dTo - dFrom + 1)) + dFrom;
@@ -182,14 +259,12 @@ async function broadcastLoopInit() {
     try {
         const processed = await processPendingBroadcasts();
         if (!processed) {
-            // Si no hay nada que procesar, el motor descansa 5 segundos y vuelve a buscar
             await delay(5000);
         }
     } catch (err) {
-        console.error("🔥 [Broadcast Loop] Error crítico en el loop principal:", err);
+        console.error("Error crítico en el loop principal:", err);
         await delay(5000); 
     } finally {
-        // LA MAGIA: Pase lo que pase, el motor se vuelve a llamar a sí mismo. JAMÁS MUERE.
         broadcastLoopInit();
     }
 }
