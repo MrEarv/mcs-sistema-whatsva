@@ -54,7 +54,6 @@ async function convertMsg({ obj = {}, outgoing = false }) {
         senderName, status: "sent", star: false, route, context
     });
 
-    // 1. Imagen
     if (obj?.message?.imageMessage) {
         const downloadMedia = await downloadMediaPromise(obj, obj.message.imageMessage.mimetype);
         const ctx = obj.message.imageMessage.contextInfo;
@@ -64,7 +63,6 @@ async function convertMsg({ obj = {}, outgoing = false }) {
             mimetype: obj.message.imageMessage.mimetype
         }, ctx?.stanzaId ? { jid: ctx.participant, id: ctx.stanzaId } : "");
     }
-    // 2. Ubicación (Restaurado a su tipo "loc" nativo)
     else if (obj?.message?.locationMessage) {
         const loc = obj.message.locationMessage;
         return buildReturn("loc", {
@@ -74,13 +72,11 @@ async function convertMsg({ obj = {}, outgoing = false }) {
             address: loc.address || ""
         });
     }
-    // 3. Texto Simple y Citas
     else if (obj?.message?.conversation || obj?.message?.extendedTextMessage?.text) {
         const text = obj.message.conversation || obj.message.extendedTextMessage.text;
         const ctx = obj.message.extendedTextMessage?.contextInfo;
         return buildReturn("text", { text }, ctx?.stanzaId ? { jid: ctx.participant, id: ctx.stanzaId } : "");
     }
-    // 4. Video
     else if (obj?.message?.videoMessage) {
         const downloadMedia = await downloadMediaPromise(obj, obj.message.videoMessage.mimetype);
         const ctx = obj.message.videoMessage.contextInfo;
@@ -90,7 +86,6 @@ async function convertMsg({ obj = {}, outgoing = false }) {
             mimetype: obj.message.videoMessage.mimetype
         }, ctx?.stanzaId ? { jid: ctx.participant, id: ctx.stanzaId } : "");
     }
-    // 5. Documento
     else if (obj?.message?.documentMessage) {
         const docMsg = obj.message.documentMessage;
         const downloadMedia = await downloadMediaPromise(obj, docMsg.mimetype?.replace("application/x-javascript", "application/javascript"));
@@ -101,7 +96,6 @@ async function convertMsg({ obj = {}, outgoing = false }) {
             mimetype: docMsg.mimetype
         }, ctx?.stanzaId ? { jid: ctx.participant, id: ctx.stanzaId } : "");
     }
-    // 6. Audio
     else if (obj?.message?.audioMessage) {
         const downloadMedia = await downloadMediaPromise(obj, obj.message.audioMessage.mimetype);
         const ctx = obj.message.audioMessage.contextInfo;
@@ -111,7 +105,6 @@ async function convertMsg({ obj = {}, outgoing = false }) {
             mimetype: obj.message.audioMessage.mimetype
         }, ctx?.stanzaId ? { jid: ctx.participant, id: ctx.stanzaId } : "");
     }
-    // 7. Documento con leyenda
     else if (obj?.message?.documentWithCaptionMessage) {
         const docMsg = obj.message.documentWithCaptionMessage.message.documentMessage;
         const downloadMedia = await downloadMediaPromise(obj, docMsg.mimetype?.replace("application/x-javascript", "application/javascript"));
@@ -122,7 +115,6 @@ async function convertMsg({ obj = {}, outgoing = false }) {
             mimetype: docMsg.mimetype?.replace("application/x-javascript", "application/javascript")
         }, ctx?.stanzaId ? { jid: ctx.participant, id: ctx.stanzaId } : "");
     }
-    // 8. Stickers (Le asignamos su tipo propio para que React lo dibuje pequeño y transparente)
     else if (obj?.message?.stickerMessage) {
         const downloadMedia = await downloadMediaPromise(obj, obj.message.stickerMessage.mimetype);
         const ctx = obj.message.stickerMessage.contextInfo;
@@ -132,7 +124,6 @@ async function convertMsg({ obj = {}, outgoing = false }) {
             mimetype: obj.message.stickerMessage.mimetype
         }, ctx?.stanzaId ? { jid: ctx.participant, id: ctx.stanzaId } : "");
     }
-    // 9. Contactos (vCard)
     else if (obj?.message?.contactMessage) {
         const ctx = obj.message.contactMessage.contextInfo;
         return buildReturn("contact", {
@@ -140,7 +131,6 @@ async function convertMsg({ obj = {}, outgoing = false }) {
             vcard: obj.message.contactMessage.vcard
         }, ctx?.stanzaId ? { jid: ctx.participant, id: ctx.stanzaId } : "");
     }
-    // 10. Actualización de entrega
     else if (obj?.message?.update && obj?.update?.status) {
         return {
             group: isGroup, type: "update",
@@ -148,7 +138,6 @@ async function convertMsg({ obj = {}, outgoing = false }) {
             msgId: obj.key.id
         };
     }
-    // 11. Reacciones
     else if (obj?.message?.reactionMessage) {
         return {
             group: isGroup, type: "reaction",
@@ -179,7 +168,6 @@ async function extractData(m, sessionId) {
         obj: m,
         outgoing: m?.key?.fromMe ? true : false
     })
-
 
     return {
         uid: uid,
@@ -234,7 +222,6 @@ async function updatingInMysql({ session, remoteJid, isGroup, chatId, actualObj,
                 } catch(e){}
             }
 
-            // Blindamos las variables con || null para evitar el crash silencioso
             await query(
                 `INSERT INTO chats (
                     chat_id, uid, last_message_came, sender_name, sender_mobile, sender_jid, last_message, instance_id, profile, other
@@ -261,8 +248,7 @@ async function updatingInMysql({ session, remoteJid, isGroup, chatId, actualObj,
             ]);
         }
     } catch (err) {
-        //console.error(`ERROR CRITICO EN updatingInMysql:`, err);
-        throw err; // Lanzamos el error hacia arriba para verlo en la consola
+        throw err; 
     }
 }
 
@@ -291,13 +277,12 @@ async function webhookIncoming(m, sessionId, session) {
             return;
         }
 
-        // 🔥 HACK: Evitamos que las reacciones y los ticks azules creen burbujas en blanco
         if (state.actualObj.type === "reaction") {
             await updateReaction({ uid: state.uid, chatId: state.chatId, reaction: state.actualObj.reaction, msgId: state.actualObj.msgId, actualObj: state.actualObj });
-            return; // Cortamos el proceso aquí para no guardar un mensaje nuevo
+            return; 
         }
         if (state.actualObj.type === "update") {
-            return; // Cortamos el proceso aquí también
+            return; 
         }
 
         const chat = await query(`SELECT * FROM chats WHERE chat_id = ? AND uid = ? AND instance_id = ?`, [
