@@ -70,6 +70,19 @@ function resolveTemplet(templet) {
             return null;
     }
 }
+/*
+
+Nota:
+Traté de hacer que los mensajes siempre fueran al mismo chat,osea que si alguien mandaba mensaje por un dispositivo vinculado, se guarda
+como un @jid y si se le manda un broadcast, se guarda en el mismo chat, pero no funcionó, así que que cada mensaje de broadcast es un chat nuevo.
+
+No es algo que se pueda corregir ya que no esta en nosotros como Whatsapp nos mande el id, no podemos saber si el mensaje que me enviaron
+desde una pc es el mismo al que le mande mensaje por difusion
+
+Entonces, si tenias un chat pero sin el numero  resgistrado (solo @jid), le mandas un broadcast y se crea un chat nuevo ahora si con el numero registrado,
+borras el anterior chat y listo
+
+*/
 
 async function processPendingBroadcasts() {
     const broadcasts = await query(`SELECT * FROM broadcast WHERE status = ?`, ["PENDING"]);

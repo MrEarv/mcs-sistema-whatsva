@@ -237,6 +237,14 @@ const createSession = async (sessionId, isLegacy = false, req, res, getPairCode,
             webhookIncoming(message, sessionId, session);
         }
     });
+    wa.ev.on('messages.update', async (updates) => {
+        const { updateDelivery } = require('../functions/x.js');
+        for (const update of updates) {
+            if (update.update?.status) {
+                updateDelivery(update, sessionId, null);
+            }
+        }
+    });
 
     /* Código antiguo de encuestas interactivas de Baileys. Las encuestas ahora
        se envían como texto plano y este listener ya no se utiliza.

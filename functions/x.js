@@ -14,8 +14,18 @@ function downloadMediaPromise(m, mimetype) {
         try {
             const bufferMsg = await downloadMediaMessage(m, 'buffer', {}, {})
             const randomSt = randomstring.generate(6)
-            const mimeType = mime.extension(mimetype);
-            const fileName = `${randomSt}.${mimeType}`
+            
+            const cleanMime = mimetype ? mimetype.split(';')[0] : '';
+            let ext = mime.extension(cleanMime);
+            
+            if (!ext) {
+                if (cleanMime.includes('audio')) ext = 'ogg';
+                else if (cleanMime.includes('video')) ext = 'mp4';
+                else if (cleanMime.includes('webp')) ext = 'webp';
+                else ext = 'bin';
+            }
+
+            const fileName = `${randomSt}.${ext}`
             const filePath = `${__dirname}/../client/public/media/${fileName}`
 
             saveImageToFile(bufferMsg, filePath, mimetype)
@@ -27,487 +37,127 @@ function downloadMediaPromise(m, mimetype) {
         }
     })
 }
-
 async function convertMsg({ obj = {}, outgoing = false }) {
-    // console.log({ obj: JSON.stringify(obj) })
-    const timestamp = Math.floor(Date.now() / 1000)
+    const timestamp = Math.floor(Date.now() / 1000);
+    
+    if (!obj?.key?.remoteJid || obj.key.remoteJid === "status@broadcast") return null;
 
-    // for image message 
-    if (obj?.message?.imageMessage && obj?.key?.remoteJid !== "status@broadcast" && obj?.key?.remoteJid) {
+    const isGroup = obj.key.remoteJid.endsWith("@g.us");
+    const remoteJid = obj.key.remoteJid;
+    const msgId = obj.key.id;
+    const senderName = obj.pushName || "Usuario";
+    const route = outgoing ? 'outgoing' : "incoming";
 
-        const downloadMedia = await downloadMediaPromise(obj, obj?.message?.imageMessage?.mimetype)
-        console.log({
-            downloadMedia
-        })
-        let context
+    const buildReturn = (type, msgContext, context = "") => ({
+        group: isGroup, type, msgId, remoteJid, msgContext, reaction: "",
+        timestamp: obj.messageTimestamp || timestamp,
+        senderName, status: "sent", star: false, route, context
+    });
 
-        if (obj?.message?.imageMessage?.contextInfo) {
-            context = {
-                jid: obj?.message?.imageMessage?.contextInfo?.participant,
-                id: obj?.message?.imageMessage?.contextInfo?.stanzaId
-            }
-        } else {
-            context = ""
-        }
-
-        if (obj?.key?.remoteJid?.endsWith("@g.us")) {
-            return {
-                group: true,
-                type: "image",
-                msgId: obj?.key?.id,
-                remoteJid: obj?.key?.remoteJid,
-                msgContext: {
-                    caption: obj?.message?.imageMessage?.caption || "",
-                    fileName: downloadMedia?.success ? downloadMedia.fileName : "",
-                    mimetype: obj?.message?.imageMessage?.mimetype
-                },
-                reaction: "",
-                timestamp: obj?.messageTimestamp || timestamp,
-                senderName: obj?.pushName,
-                status: "sent",
-                star: false,
-                route: outgoing ? 'outgoing' : "incoming",
-                context: context
-            }
-        }
-        if (obj?.key?.remoteJid?.endsWith("@s.whatsapp.net")) {
-            return {
-                group: false,
-                type: "image",
-                msgId: obj?.key?.id,
-                remoteJid: obj?.key?.remoteJid,
-                msgContext: {
-                    caption: obj?.message?.imageMessage?.caption || "",
-                    fileName: downloadMedia?.success ? downloadMedia.fileName : "",
-                    mimetype: obj?.message?.imageMessage?.mimetype
-                },
-                reaction: "",
-                timestamp: obj?.messageTimestamp || timestamp,
-                senderName: obj?.pushName,
-                status: "sent",
-                star: false,
-                route: outgoing ? 'outgoing' : "incoming",
-                context: context
-            }
-        }
+    // 1. Imagen
+    if (obj?.message?.imageMessage) {
+        const downloadMedia = await downloadMediaPromise(obj, obj.message.imageMessage.mimetype);
+        const ctx = obj.message.imageMessage.contextInfo;
+        return buildReturn("image", {
+            caption: obj.message.imageMessage.caption || "",
+            fileName: downloadMedia?.success ? downloadMedia.fileName : "",
+            mimetype: obj.message.imageMessage.mimetype
+        }, ctx?.stanzaId ? { jid: ctx.participant, id: ctx.stanzaId } : "");
     }
-    // for location message 
-    else if (obj?.message?.locationMessage && obj?.key?.remoteJid !== "status@broadcast" && obj?.key?.remoteJid) {
-        if (obj?.key?.remoteJid?.endsWith("@g.us")) {
-            return {
-                group: true,
-                type: "loc",
-                msgId: obj?.key?.id,
-                remoteJid: obj?.key?.remoteJid,
-                msgContext: {
-                    lat: obj?.message?.locationMessage?.degreesLatitude,
-                    long: obj?.message?.locationMessage?.degreesLongitude,
-                    name: obj?.message?.locationMessage?.name,
-                    address: obj?.message?.locationMessage?.address
-                },
-                reaction: "",
-                timestamp: obj?.messageTimestamp || timestamp,
-                senderName: obj?.pushName,
-                status: "sent",
-                star: false,
-                route: outgoing ? 'outgoing' : "incoming",
-                context: ""
-            }
-        }
-        if (obj?.key?.remoteJid?.endsWith("@s.whatsapp.net")) {
-            return {
-                group: false,
-                type: "loc",
-                msgId: obj?.key?.id,
-                remoteJid: obj?.key?.remoteJid,
-                msgContext: {
-                    lat: obj?.message?.locationMessage?.degreesLatitude,
-                    long: obj?.message?.locationMessage?.degreesLongitude,
-                    name: obj?.message?.locationMessage?.name,
-                    address: obj?.message?.locationMessage?.address
-                },
-                reaction: "",
-                timestamp: obj?.messageTimestamp || timestamp,
-                senderName: obj?.pushName,
-                status: "sent",
-                star: false,
-                route: outgoing ? 'outgoing' : "incoming",
-                context: ""
-            }
-        }
+    // 2. Ubicación (Restaurado a su tipo "loc" nativo)
+    else if (obj?.message?.locationMessage) {
+        const loc = obj.message.locationMessage;
+        return buildReturn("loc", {
+            lat: loc.degreesLatitude,
+            long: loc.degreesLongitude,
+            name: loc.name || "",
+            address: loc.address || ""
+        });
     }
-    // for text message 
-    else if (obj?.message?.conversation && obj?.key?.remoteJid !== "status@broadcast" && obj?.key?.remoteJid) {
+    // 3. Texto Simple y Citas
+    else if (obj?.message?.conversation || obj?.message?.extendedTextMessage?.text) {
+        const text = obj.message.conversation || obj.message.extendedTextMessage.text;
+        const ctx = obj.message.extendedTextMessage?.contextInfo;
+        return buildReturn("text", { text }, ctx?.stanzaId ? { jid: ctx.participant, id: ctx.stanzaId } : "");
+    }
+    // 4. Video
+    else if (obj?.message?.videoMessage) {
+        const downloadMedia = await downloadMediaPromise(obj, obj.message.videoMessage.mimetype);
+        const ctx = obj.message.videoMessage.contextInfo;
+        return buildReturn("video", {
+            caption: obj.message.videoMessage.caption || "",
+            fileName: downloadMedia?.success ? downloadMedia.fileName : "",
+            mimetype: obj.message.videoMessage.mimetype
+        }, ctx?.stanzaId ? { jid: ctx.participant, id: ctx.stanzaId } : "");
+    }
+    // 5. Documento
+    else if (obj?.message?.documentMessage) {
+        const docMsg = obj.message.documentMessage;
+        const downloadMedia = await downloadMediaPromise(obj, docMsg.mimetype?.replace("application/x-javascript", "application/javascript"));
+        const ctx = docMsg.contextInfo;
+        return buildReturn("doc", {
+            caption: docMsg.caption || "",
+            fileName: downloadMedia?.success ? downloadMedia.fileName : "",
+            mimetype: docMsg.mimetype
+        }, ctx?.stanzaId ? { jid: ctx.participant, id: ctx.stanzaId } : "");
+    }
+    // 6. Audio
+    else if (obj?.message?.audioMessage) {
+        const downloadMedia = await downloadMediaPromise(obj, obj.message.audioMessage.mimetype);
+        const ctx = obj.message.audioMessage.contextInfo;
+        return buildReturn("aud", {
+            caption: "",
+            fileName: downloadMedia?.success ? downloadMedia.fileName : "",
+            mimetype: obj.message.audioMessage.mimetype
+        }, ctx?.stanzaId ? { jid: ctx.participant, id: ctx.stanzaId } : "");
+    }
+    // 7. Documento con leyenda
+    else if (obj?.message?.documentWithCaptionMessage) {
+        const docMsg = obj.message.documentWithCaptionMessage.message.documentMessage;
+        const downloadMedia = await downloadMediaPromise(obj, docMsg.mimetype?.replace("application/x-javascript", "application/javascript"));
+        const ctx = obj.message.documentWithCaptionMessage.contextInfo;
+        return buildReturn("doc_cap", {
+            caption: docMsg.caption || "",
+            fileName: downloadMedia?.success ? downloadMedia.fileName : "",
+            mimetype: docMsg.mimetype?.replace("application/x-javascript", "application/javascript")
+        }, ctx?.stanzaId ? { jid: ctx.participant, id: ctx.stanzaId } : "");
+    }
+    // 8. Stickers (Le asignamos su tipo propio para que React lo dibuje pequeño y transparente)
+    else if (obj?.message?.stickerMessage) {
+        const downloadMedia = await downloadMediaPromise(obj, obj.message.stickerMessage.mimetype);
+        const ctx = obj.message.stickerMessage.contextInfo;
+        return buildReturn("sticker", {
+            caption: "", 
+            fileName: downloadMedia?.success ? downloadMedia.fileName : "",
+            mimetype: obj.message.stickerMessage.mimetype
+        }, ctx?.stanzaId ? { jid: ctx.participant, id: ctx.stanzaId } : "");
+    }
+    // 9. Contactos (vCard)
+    else if (obj?.message?.contactMessage) {
+        const ctx = obj.message.contactMessage.contextInfo;
+        return buildReturn("contact", {
+            displayName: obj.message.contactMessage.displayName,
+            vcard: obj.message.contactMessage.vcard
+        }, ctx?.stanzaId ? { jid: ctx.participant, id: ctx.stanzaId } : "");
+    }
+    // 10. Actualización de entrega
+    else if (obj?.message?.update && obj?.update?.status) {
         return {
-            group: obj?.key?.remoteJid?.endsWith("@g.us"),
-            type: "text",
-            msgId: obj?.key?.id,
-            remoteJid: obj?.key?.remoteJid,
-            msgContext: {
-                text: obj?.message?.conversation
-            },
-            reaction: "",
-            timestamp: obj?.messageTimestamp || timestamp,
-            senderName: obj?.pushName || "Usuario",
-            status: "sent",
-            star: false,
-            route: outgoing ? 'outgoing' : "incoming",
-            context: ""
+            group: isGroup, type: "update",
+            updateType: obj.update.status === 4 ? "read" : "delivery",
+            msgId: obj.key.id
         };
     }
-    // for text for ectended 
-    else if (!obj?.message?.extendedTextMessage?.contextInfo?.stanzaId && obj?.message?.extendedTextMessage?.text && obj?.key?.remoteJid !== "status@broadcast" && obj?.key?.remoteJid) {
-        if (obj?.key?.remoteJid?.endsWith("@g.us")) {
-            return {
-                group: true,
-                type: "text",
-                msgId: obj?.key?.id,
-                remoteJid: obj?.key?.remoteJid,
-                msgContext: {
-                    text: obj?.message?.extendedTextMessage?.text
-                },
-                reaction: "",
-                timestamp: obj?.messageTimestamp || timestamp,
-                senderName: obj?.pushName,
-                status: "sent",
-                star: false,
-                route: outgoing ? 'outgoing' : "incoming",
-                context: ""
-            }
-        }
-        if (obj?.key?.remoteJid?.endsWith("@s.whatsapp.net")) {
-            return {
-                group: false,
-                type: "text",
-                msgId: obj?.key?.id,
-                remoteJid: obj?.key?.remoteJid,
-                msgContext: {
-                    text: obj?.message?.extendedTextMessage?.text
-                },
-                reaction: "",
-                timestamp: obj?.messageTimestamp || timestamp,
-                senderName: obj?.pushName,
-                status: "sent",
-                star: false,
-                route: outgoing ? 'outgoing' : "incoming",
-                context: ""
-            }
-        }
-    }
-    // for video mesage 
-    else if (obj?.message?.videoMessage && obj?.key?.remoteJid !== "status@broadcast" && obj?.key?.remoteJid) {
-
-        const downloadMedia = await downloadMediaPromise(obj, obj?.message?.videoMessage?.mimetype)
-
-        let context
-
-        if (obj?.message?.videoMessage?.contextInfo) {
-            context = {
-                jid: obj?.message?.videoMessage?.contextInfo?.participant,
-                id: obj?.message?.videoMessage?.contextInfo?.stanzaId
-            }
-        } else {
-            context = ""
-        }
-
-        if (obj?.key?.remoteJid?.endsWith("@g.us")) {
-            return {
-                group: true,
-                type: "video",
-                msgId: obj?.key?.id,
-                remoteJid: obj?.key?.remoteJid,
-                msgContext: {
-                    caption: obj?.message?.videoMessage?.caption,
-                    fileName: downloadMedia?.success ? downloadMedia.fileName : "",
-                    mimetype: obj?.message?.videoMessage?.mimetype
-                },
-                reaction: "",
-                timestamp: obj?.messageTimestamp || timestamp,
-                senderName: obj?.pushName,
-                status: "sent",
-                star: false,
-                route: outgoing ? 'outgoing' : "incoming",
-                context: context
-            }
-        }
-        if (obj?.key?.remoteJid?.endsWith("@s.whatsapp.net")) {
-            return {
-                group: false,
-                type: "video",
-                msgId: obj?.key?.id,
-                remoteJid: obj?.key?.remoteJid,
-                msgContext: {
-                    caption: obj?.message?.videoMessage?.caption,
-                    fileName: downloadMedia?.success ? downloadMedia.fileName : "",
-                    mimetype: obj?.message?.videoMessage?.mimetype
-                },
-                reaction: "",
-                timestamp: obj?.messageTimestamp || timestamp,
-                senderName: obj?.pushName,
-                status: "sent",
-                star: false,
-                route: outgoing ? 'outgoing' : "incoming",
-                context: context
-            }
-        }
-    }
-    // document message 
-    else if (obj?.message?.documentMessage && obj?.key?.remoteJid !== "status@broadcast" && obj?.key?.remoteJid) {
-
-        const downloadMedia = await downloadMediaPromise(obj, obj?.message?.documentMessage?.mimetype?.replace("application/x-javascript", "application/javascript"))
-        let context
-
-        if (obj?.message?.documentMessage?.contextInfo) {
-            context = {
-                jid: obj?.message?.documentMessage?.contextInfo?.participant,
-                id: obj?.message?.documentMessage?.contextInfo?.stanzaId
-            }
-        } else {
-            context = ""
-        }
-
-        if (obj?.key?.remoteJid?.endsWith("@g.us")) {
-            return {
-                group: true,
-                type: "doc",
-                msgId: obj?.key?.id,
-                remoteJid: obj?.key?.remoteJid,
-                msgContext: {
-                    caption: "",
-                    fileName: downloadMedia?.success ? downloadMedia.fileName : "",
-                    mimetype: obj?.message?.documentMessage?.mimetype
-                },
-                reaction: "",
-                timestamp: obj?.messageTimestamp || timestamp,
-                senderName: obj?.pushName,
-                status: "sent",
-                star: false,
-                route: outgoing ? 'outgoing' : "incoming",
-                context: context
-            }
-        }
-        if (obj?.key?.remoteJid?.endsWith("@s.whatsapp.net")) {
-            return {
-                group: false,
-                type: "doc",
-                msgId: obj?.key?.id,
-                remoteJid: obj?.key?.remoteJid,
-                msgContext: {
-                    caption: "",
-                    fileName: downloadMedia?.success ? downloadMedia.fileName : "",
-                    mimetype: obj?.message?.documentMessage?.mimetype
-                },
-                reaction: "",
-                timestamp: obj?.messageTimestamp || timestamp,
-                senderName: obj?.pushName,
-                status: "sent",
-                star: false,
-                route: outgoing ? 'outgoing' : "incoming",
-                context: context
-            }
-        }
-    }
-    // audio message 
-    else if (obj?.message?.audioMessage && obj?.key?.remoteJid !== "status@broadcast" && obj?.key?.remoteJid) {
-
-        const downloadMedia = await downloadMediaPromise(obj, obj?.message?.audioMessage?.mimetype)
-
-        let context
-
-        if (obj?.message?.audioMessage?.contextInfo) {
-            context = {
-                jid: obj?.message?.audioMessage?.contextInfo?.participant,
-                id: obj?.message?.audioMessage?.contextInfo?.stanzaId
-            }
-        } else {
-            context = ""
-        }
-
-        if (obj?.key?.remoteJid?.endsWith("@g.us")) {
-            return {
-                group: true,
-                type: "aud",
-                msgId: obj?.key?.id,
-                remoteJid: obj?.key?.remoteJid,
-                msgContext: {
-                    caption: "",
-                    fileName: downloadMedia?.success ? downloadMedia.fileName : "",
-                    mimetype: obj?.message?.audioMessage?.mimetype
-                },
-                reaction: "",
-                timestamp: obj?.messageTimestamp || timestamp,
-                senderName: obj?.pushName,
-                status: "sent",
-                star: false,
-                route: outgoing ? 'outgoing' : "incoming",
-                context: context
-            }
-        }
-        if (obj?.key?.remoteJid?.endsWith("@s.whatsapp.net")) {
-            return {
-                group: false,
-                type: "aud",
-                msgId: obj?.key?.id,
-                remoteJid: obj?.key?.remoteJid,
-                msgContext: {
-                    caption: "",
-                    fileName: downloadMedia?.success ? downloadMedia.fileName : "",
-                    mimetype: obj?.message?.audioMessage?.mimetype
-                },
-                reaction: "",
-                timestamp: obj?.messageTimestamp || timestamp,
-                senderName: obj?.pushName,
-                status: "sent",
-                star: false,
-                route: outgoing ? 'outgoing' : "incoming",
-                context: context
-            }
-        }
-    }
-    // document with caption 
-    else if (obj?.message?.documentWithCaptionMessage && obj?.key?.remoteJid !== "status@broadcast" && obj?.key?.remoteJid) {
-
-        const downloadMedia = await downloadMediaPromise(obj, obj?.message?.documentWithCaptionMessage?.message?.documentMessage?.mimetype?.replace("application/x-javascript", "application/javascript"))
-
-        let context
-
-        if (obj?.message?.documentWithCaptionMessage?.contextInfo) {
-            context = {
-                jid: obj?.message?.documentWithCaptionMessage?.contextInfo?.participant,
-                id: obj?.message?.documentWithCaptionMessage?.contextInfo?.stanzaId
-            }
-        } else {
-            context = ""
-        }
-
-
-        if (obj?.key?.remoteJid?.endsWith("@g.us")) {
-            return {
-                group: true,
-                type: "doc_cap",
-                msgId: obj?.key?.id,
-                remoteJid: obj?.key?.remoteJid,
-                msgContext: {
-                    caption: obj?.message?.documentWithCaptionMessage?.message?.documentMessage?.caption,
-                    fileName: downloadMedia?.success ? downloadMedia.fileName : "",
-                    mimetype: obj?.message?.documentWithCaptionMessage?.message?.documentMessage?.mimetype?.replace("application/x-javascript", "application/javascript")
-                },
-                reaction: "",
-                timestamp: obj?.messageTimestamp || timestamp,
-                senderName: obj?.pushName,
-                status: "sent",
-                star: false,
-                route: outgoing ? 'outgoing' : "incoming",
-                context: context
-            }
-        }
-        if (obj?.key?.remoteJid?.endsWith("@s.whatsapp.net")) {
-            return {
-                group: false,
-                type: "doc_cap",
-                msgId: obj?.key?.id,
-                remoteJid: obj?.key?.remoteJid,
-                msgContext: {
-                    caption: obj?.message?.documentWithCaptionMessage?.message?.documentMessage?.caption,
-                    fileName: downloadMedia?.success ? downloadMedia.fileName : "",
-                    mimetype: obj?.message?.documentWithCaptionMessage?.message?.documentMessage?.mimetype?.replace("application/x-javascript", "application/javascript")
-                },
-                reaction: "",
-                timestamp: obj?.messageTimestamp || timestamp,
-                senderName: obj?.pushName,
-                status: "sent",
-                star: false,
-                route: outgoing ? 'outgoing' : "incoming",
-                context: context
-            }
-        }
-    }
-    // updating delivery 
-    else if (obj?.message?.update && obj?.key?.remoteJid !== "status@broadcast" && obj?.key?.remoteJid && obj?.update?.status) {
-        if (obj?.key?.remoteJid?.endsWith("@g.us")) {
-            return {
-                group: true,
-                type: "update",
-                updateType: obj?.update?.status === 4 ? "read" : "delivery",
-                msgId: obj?.key?.id
-            }
-        }
-        if (obj?.key?.remoteJid?.endsWith("@s.whatsapp.net")) {
-            return {
-                group: false,
-                type: "update",
-                updateType: obj?.update?.status === 4 ? "read" : "delivery",
-                msgId: obj?.key?.id
-            }
-        }
-    }
-    // adding reaction 
+    // 11. Reacciones
     else if (obj?.message?.reactionMessage) {
-        if (obj?.key?.remoteJid?.endsWith("@g.us")) {
-            return {
-                group: true,
-                type: "reaction",
-                msgId: obj?.message?.reactionMessage?.key?.id,
-                reaction: obj?.message?.reactionMessage?.text
-            }
-        }
-        if (obj?.key?.remoteJid?.endsWith("@s.whatsapp.net")) {
-            return {
-                group: false,
-                type: "reaction",
-                msgId: obj?.message?.reactionMessage?.key?.id,
-                reaction: obj?.message?.reactionMessage?.text
-            }
-        }
+        return {
+            group: isGroup, type: "reaction",
+            msgId: obj.message.reactionMessage.key.id,
+            reaction: obj.message.reactionMessage.text
+        };
     }
-    // adding quotes text extended message 
-    else if (obj?.message?.extendedTextMessage?.contextInfo?.stanzaId && obj?.key?.remoteJid !== "status@broadcast") {
-        if (obj?.key?.remoteJid?.endsWith("@g.us")) {
-            return {
-                group: true,
-                type: "text",
-                msgId: obj?.key?.id,
-                remoteJid: obj?.key?.remoteJid,
-                msgContext: {
-                    text: obj?.message?.extendedTextMessage?.text
-                },
-                reaction: "",
-                timestamp: obj?.messageTimestamp || timestamp,
-                senderName: obj?.pushName,
-                status: "sent",
-                star: false,
-                route: outgoing ? 'outgoing' : "incoming",
-                context: {
-                    jid: obj?.message?.extendedTextMessage?.contextInfo?.participant,
-                    id: obj?.message?.extendedTextMessage?.contextInfo?.stanzaId
-                }
-            }
-        }
-        if (obj?.key?.remoteJid?.endsWith("@s.whatsapp.net")) {
-            return {
-                group: false,
-                type: "text",
-                msgId: obj?.key?.id,
-                remoteJid: obj?.key?.remoteJid,
-                msgContext: {
-                    text: obj?.message?.extendedTextMessage?.text
-                },
-                reaction: "",
-                timestamp: obj?.messageTimestamp || timestamp,
-                senderName: obj?.pushName,
-                status: "sent",
-                star: false,
-                route: outgoing ? 'outgoing' : "incoming",
-                context: {
-                    jid: obj?.message?.extendedTextMessage?.contextInfo?.participant,
-                    id: obj?.message?.extendedTextMessage?.contextInfo?.stanzaId
-                }
-            }
-        }
-    }
-    else {
-        return null
-    }
+
+    return null;
 }
 
 async function extractData(m, sessionId) {
@@ -641,6 +291,15 @@ async function webhookIncoming(m, sessionId, session) {
             return;
         }
 
+        // 🔥 HACK: Evitamos que las reacciones y los ticks azules creen burbujas en blanco
+        if (state.actualObj.type === "reaction") {
+            await updateReaction({ uid: state.uid, chatId: state.chatId, reaction: state.actualObj.reaction, msgId: state.actualObj.msgId, actualObj: state.actualObj });
+            return; // Cortamos el proceso aquí para no guardar un mensaje nuevo
+        }
+        if (state.actualObj.type === "update") {
+            return; // Cortamos el proceso aquí también
+        }
+
         const chat = await query(`SELECT * FROM chats WHERE chat_id = ? AND uid = ? AND instance_id = ?`, [
             state.chatId || null,
             state.uid || null,
@@ -654,12 +313,10 @@ async function webhookIncoming(m, sessionId, session) {
         const chatPath = `${__dirname}/../conversations/inbox/${state.uid}/${state.chatId}.json`;
         addObjectToFile(state.actualObj, chatPath);
 
-
         if (state.userData?.opened_chat_instance && state.userData?.opened_chat_instance === state.sessionId) {
             await sendNewMsgSocket({
                 uid: state.uid, sessionId: state.sessionId, actualObj: state.actualObj, chatId: state.chatId
             });
-        } else {
         }
     } catch (e) {
         console.error("CRASH EN WEBHOOK:", e);
