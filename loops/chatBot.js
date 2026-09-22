@@ -766,7 +766,15 @@ async function runChatbot(i, msg, uid, client_id, m, sessionId, session) {
     const edges = readJsonFromFile(edgePath);
 
     const chatUserKey = `${uid}_${msg?.remoteJid}`;
-    const currentUserState = global.userStates.get(chatUserKey);
+    let currentUserState = global.userStates.get(chatUserKey);
+
+    if (currentUserState && currentUserState.length > 0) {
+        const isValidState = currentUserState.some(stateId => nodes.some(node => String(node.id) === stateId));
+        if (!isValidState) {
+            global.userStates.delete(chatUserKey);
+            currentUserState = null; 
+        }
+    }
 
     if (nodes.length > 0 && edges.length > 0) {
         const answer = getReply(nodes, edges, msg?.text, currentUserState);

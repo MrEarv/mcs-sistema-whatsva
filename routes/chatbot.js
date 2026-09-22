@@ -30,15 +30,13 @@ router.post('/add_bot', validateUser, checkPlanExpiry, checkChatbotPlan, async (
             }
         }
 
-        // check existing bot 
+        // Revisamos si ya existe un bot encendido en esta instancia
         const getBot = await query(`SELECT * FROM chatbot WHERE uid = ? AND instance_id = ? AND active = 1`, [
             req.decode.uid,
             instance_id
         ])
 
-        if (getBot.length > 0) {
-            return res.json({ success: false, msg: "This instance is already busy with another chatbot" })
-        }
+        const isBotActive = getBot.length > 0 ? 0 : 1;
 
         await query(`INSERT INTO chatbot (uid, title, for_all, prevent_book_id, flow, active, instance_id) VALUES (?,?,?,?,?,?,?)`, [
             req.decode.uid,
@@ -46,7 +44,7 @@ router.post('/add_bot', validateUser, checkPlanExpiry, checkChatbotPlan, async (
             for_all ? 1 : 0,
             prevent_book_id,
             JSON.stringify(flow),
-            1,
+            isBotActive, 
             instance_id
         ])
 
@@ -74,17 +72,7 @@ router.post('/update_bot', validateUser, checkPlanExpiry, checkChatbotPlan, asyn
             }
         }
 
-        // check existing bot 
-        const getBot = await query(`SELECT * FROM chatbot WHERE uid = ? AND instance_id = ? AND active = 1`, [
-            req.decode.uid,
-            instance_id
-        ])
-
-        if (getBot.length > 0 && parseFloat(id) !== parseFloat(getBot[0]?.id)) {
-            return res.json({ success: false, msg: "This instance is already busy with another chatbot" })
-        }
-
-        await query(`UPDATE chatbot SET title = ?, for_all = ?, prevent_book_id = ?, flow = ?, instance_id = ? WHERE id = ? AND uid = ?`, [
+      await query(`UPDATE chatbot SET title = ?, for_all = ?, prevent_book_id = ?, flow = ?, instance_id = ? WHERE id = ? AND uid = ?`, [
             title,
             for_all ? 1 : 0,
             prevent_book_id,
@@ -122,6 +110,13 @@ router.post('/change_bot_status', validateUser, checkPlanExpiry, checkChatbotPla
 
         if (!botId) {
             return res.json({ success: false, msg: "Invalid request found" })
+        }
+
+        if (status) {
+            const getBot = await query(`SELECT instance_id FROM chatbot WHERE id = ? AND uid = ?`, [botId, req.decode.uid]);
+            if (getBot.length > 0) {
+                await query(`UPDATE chatbot SET active = 0 WHERE instance_id = ? AND uid = ?`, [getBot[0].instance_id, req.decode.uid]);
+            }
         }
 
         await query(`UPDATE chatbot SET active = ? WHERE id = ? AND uid = ?`, [
