@@ -31,28 +31,33 @@ function resolveTemplet(templet) {
     const type = templet.type;
     const content = typeof templet.content === 'string' ? JSON.parse(templet.content) : templet.content;
     
+    const getFilename = (raw) => {
+        if (!raw) return "";
+        return String(raw).split('/').pop();
+    };
+    
     switch (type) {
         case 'text': 
             return content;
         case 'image': 
             return { 
-                image: { url: `${__dirname}/../client/public/media/${content?.url || content?.filename || content?.image?.url}` }, 
+                image: { url: `${__dirname}/../client/public/media/${getFilename(content?.filename || content?.url || content?.image?.url)}` }, 
                 caption: content?.legend || content?.caption || null 
             };
         case 'doc': 
             return { 
-                document: { url: `${__dirname}/../client/public/media/${content?.url || content?.filename || content?.document?.url}` }, 
+                document: { url: `${__dirname}/../client/public/media/${getFilename(content?.filename || content?.url || content?.document?.url)}` }, 
                 fileName: content?.originalName || content?.fileName, 
                 caption: content?.legend || content?.caption || null 
             };
         case 'aud': 
             return { 
-                audio: { url: `${__dirname}/../client/public/media/${content?.url || content?.filename || content?.audio?.url}` }, 
+                audio: { url: `${__dirname}/../client/public/media/${getFilename(content?.filename || content?.url || content?.audio?.url)}` }, 
                 ptt: true 
             };
         case 'video': 
             return { 
-                video: { url: `${__dirname}/../client/public/media/${content?.url || content?.filename || content?.video?.url}` }, 
+                video: { url: `${__dirname}/../client/public/media/${getFilename(content?.filename || content?.url || content?.video?.url)}` }, 
                 caption: content?.legend || content?.caption || null 
             };
         case 'loc': 
@@ -141,7 +146,7 @@ async function processPendingBroadcasts() {
 
             // 7. Enviar el mensaje usando el número corregido (realJid)
             const send = await session.sendMessage(realJid, returnObjWithVariables);
-            
+
             if (send?.key?.id) {
                 const { client_id } = decodeObject(instanceId);
                 await query(`UPDATE broadcast_log SET delivery_status = ?, msg_id = ?, instance_id = ? WHERE id = ?`, [
