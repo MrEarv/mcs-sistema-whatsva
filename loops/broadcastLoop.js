@@ -1,223 +1,192 @@
 const { query } = require('../database/dbpromise');
 const { decodeObject, mergeVariables } = require('../functions/function');
 const { getSession, isExists } = require('../middlewares/req');
-const moment = require('moment-timezone')
+const moment = require('moment-timezone');
 
-function getRandomElementFromArray(array, exclude) {
-    const filteredArray = array.filter(item => item !== exclude);
-    const randomIndex = Math.floor(Math.random() * filteredArray.length);
-    return filteredArray[randomIndex];
+function getRandomElementFromArray(array) {
+    if (!array || array.length === 0) return null;
+    const randomIndex = Math.floor(Math.random() * array.length);
+    return array[randomIndex];
 }
 
 function hasDatePassedInTimezone(timezone, datetimeFromMySQL) {
-    if (!timezone || !datetimeFromMySQL) {
-        return true;
+    if (!timezone || !datetimeFromMySQL) return true;
+    try {
+        const momentDate = moment.utc(datetimeFromMySQL).tz(timezone);
+        if (!momentDate.isValid()) return false;
+        const currentMoment = moment.tz(timezone);
+        return momentDate.isBefore(currentMoment);
+    } catch (e) {
+        return true; // Si hay error de zona horaria, liberamos el envío
     }
-
-    const momentDate = moment.utc(datetimeFromMySQL).tz(timezone);
-
-    if (!momentDate.isValid()) {
-        return false;
-    }
-    const currentMoment = moment.tz(timezone);
-    if (!currentMoment.isValid()) {
-        return false;
-    }
-    return momentDate.isBefore(currentMoment);
 }
 
-function delayRandom(fromSeconds, toSeconds) {
-    const randomSeconds = Math.random() * (toSeconds - fromSeconds) + fromSeconds;
-
-    console.log(`random Delay ${randomSeconds} sec`)
-
-    return new Promise((resolve) => {
-        setTimeout(() => {
-            resolve();
-        }, randomSeconds * 1000);
-    });
+function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// Adaptamos el lector para que acepte tanto plantillas antiguas como las de nuestro nuevo Creador de Flujos
 function resolveTemplet(templet) {
-    const type = templet?.type
-    const content = JSON.parse(templet?.content)
+    if (!templet) return null;
+    const type = templet.type;
+    const content = typeof templet.content === 'string' ? JSON.parse(templet.content) : templet.content;
+    
     switch (type) {
-        case 'text':
-            return content
-        case 'image':
-            return {
-                image: {
-                    url: `${__dirname}/../client/public/media/${content?.image?.url}`
-                },
-                caption: content?.caption || null,
-            }
-        case 'doc':
-            return {
-                document:
-                    { url: `${__dirname}/../client/public/media/${content?.document?.url}` },
-                fileName: content?.fileName,
-                caption: content?.caption || null,
-            }
-        case 'aud':
-            return {
-                audio:
-                    { url: `${__dirname}/../client/public/media/${content?.audio?.url}` },
-                fileName: content?.fileName,
-                ptt: true,
-            }
-        case 'video':
-            return {
-                video:
-                    { url: `${__dirname}/../client/public/media/${content?.video?.url}` },
-                caption: content?.caption
-            }
-        case 'loc':
-            return {
-                location:
-                {
-                    degreesLatitude: content?.location?.degreesLatitude,
-                    degreesLongitude: content?.location?.degreesLongitude
-                }
-            }
-        case 'poll':
-            return content
-        default:
+        case 'text': 
+            return content;
+        case 'image': 
+            return { 
+                image: { url: `${__dirname}/../client/public/media/${content?.url || content?.filename || content?.image?.url}` }, 
+                caption: content?.legend || content?.caption || null 
+            };
+        case 'doc': 
+            return { 
+                document: { url: `${__dirname}/../client/public/media/${content?.url || content?.filename || content?.document?.url}` }, 
+                fileName: content?.originalName || content?.fileName, 
+                caption: content?.legend || content?.caption || null 
+            };
+        case 'aud': 
+            return { 
+                audio: { url: `${__dirname}/../client/public/media/${content?.url || content?.filename || content?.audio?.url}` }, 
+                ptt: true 
+            };
+        case 'video': 
+            return { 
+                video: { url: `${__dirname}/../client/public/media/${content?.url || content?.filename || content?.video?.url}` }, 
+                caption: content?.legend || content?.caption || null 
+            };
+        case 'loc': 
+            return { 
+                location: { degreesLatitude: content?.lat || content?.location?.degreesLatitude, degreesLongitude: content?.lng || content?.location?.degreesLongitude } 
+            };
+        case 'poll': 
+            return content;
+        default: 
             return null;
     }
 }
 
-async function getBroadLog() {
-    const beforeRes = await query(`SELECT * FROM broadcast WHERE status = ?`, ["PENDING"])
+async function processPendingBroadcasts() {
+    const broadcasts = await query(`SELECT * FROM broadcast WHERE status = ?`, ["PENDING"]);
+    
+    if (!broadcasts || broadcasts.length === 0) return false; 
 
-    const res = beforeRes.filter((i) => i.schedule && hasDatePassedInTimezone(i?.timezone, i?.schedule))
+    let processedAny = false;
 
-    // getting broadcast log 
-    if (res.length > 0) {
-        const promise = res.map(async (i) => {
-            const logOne = await query(`SELECT * FROM broadcast_log WHERE broadcast_id = ? AND delivery_status = ? LIMIT 1`, [
-                i?.broadcast_id,
-                "PENDING"
-            ])
+    for (const b of broadcasts) {
+        // 1. Validar el horario
+        if (b.schedule && !hasDatePassedInTimezone(b.timezone, b.schedule)) {
+            continue; 
+        }
 
+        // 2. Extraer un solo log pendiente para esta campaña
+        const pendingLogs = await query(`SELECT * FROM broadcast_log WHERE broadcast_id = ? AND delivery_status = ? LIMIT 1`, [b.broadcast_id, "PENDING"]);
 
-            if (logOne.length < 1) {
-                console.log("ZERO")
-                await query(`UPDATE broadcast SET status = ? WHERE broadcast_id = ?`, [
-                    "COMPLETED",
-                    i?.broadcast_id,
-                ])
-            }
-            return {
-                success: logOne.length > 0 ? true : false,
-                log: logOne[0],
-                i: i
-            }
-        })
+        if (pendingLogs.length === 0) {
+            // Si ya no hay logs pendientes, la campaña terminó
+            await query(`UPDATE broadcast SET status = ? WHERE broadcast_id = ?`, ["COMPLETED", b.broadcast_id]);
+            console.log(`\n✅ [Broadcast] Campaña "${b.title}" finalizada con éxito.`);
+            continue;
+        }
 
-        const promiseWait = await Promise.all(promise)
-        const finalLog = promiseWait.filter(i => i?.success)
+        processedAny = true;
+        const logObj = pendingLogs[0];
 
-        return finalLog
-    } else {
-        return []
-    }
-}
-
-async function sendMessage(logs) {
-    const promise = logs.map(async (log) => {
         try {
-            const i = log?.i
-            const logObj = log?.log
+            console.log(`\n⏳ [Broadcast] Procesando envío a: ${logObj.send_to}...`);
 
-            const insArr = JSON.parse(i?.instance_id)
-            const instanceId = getRandomElementFromArray(insArr)
-            const boradCastId = logObj?.id
-            const jid = `${logObj?.send_to}@s.whatsapp.net`
-            const templet = JSON.parse(log?.i?.templet)
-
-            const session = await getSession(instanceId)
-
-            const actualObj = resolveTemplet(templet)
-
+            // 3. Obtener la sesión de WhatsApp
+            const insArr = JSON.parse(b.instance_id);
+            const instanceId = getRandomElementFromArray(insArr);
+            const session = await getSession(instanceId);
 
             if (!session) {
-                await query(`UPDATE broadcast_log SET delivery_status = ? WHERE id = ?`, [
-                    "Instance NA",
-                    boradCastId
-                ])
+                console.log(`❌ [Broadcast] Instancia desconectada.`);
+                await query(`UPDATE broadcast_log SET delivery_status = ?, err = ? WHERE id = ?`, ["Instance NA", "Session disconnected", logObj.id]);
+                continue;
+            }
+
+// 4. Limpiar el número de teléfono
+            const rawNumber = String(logObj.send_to).replace(/\D/g, '');
+            const jid = `${rawNumber}@s.whatsapp.net`;
+
+            // 5. Validar existencia y extraer el JID REAL (La magia para México 52 vs 521)
+            const [waCheck] = await session.onWhatsApp(jid);
+            
+            if (!waCheck || !waCheck.exists) {
+                console.log(`❌ [Broadcast] El número ${rawNumber} no tiene WhatsApp.`);
+                await query(`UPDATE broadcast_log SET delivery_status = ?, err = ? WHERE id = ?`, ["Number NA", "Not on WA", logObj.id]);
+                continue;
+            }
+
+            // WhatsApp nos corrige el número internamente (le agrega el 1 si es necesario)
+            const realJid = waCheck.jid; 
+
+            // 6. Preparar la plantilla y las variables
+            const templet = JSON.parse(b.templet);
+            const actualObj = resolveTemplet(templet);
+            
+            if (!actualObj) {
+                console.log(`❌ [Broadcast] Plantilla inválida.`);
+                await query(`UPDATE broadcast_log SET delivery_status = ?, err = ? WHERE id = ?`, ["failed", "Invalid template", logObj.id]);
+                continue;
+            }
+
+            const contactData = JSON.parse(logObj.contact);
+            const returnObjWithVariables = mergeVariables({
+                content: actualObj,
+                varJson: contactData,
+                type: templet.type?.toLowerCase()
+            });
+
+            // 7. Enviar el mensaje usando el número corregido (realJid)
+            const send = await session.sendMessage(realJid, returnObjWithVariables);
+            
+            if (send?.key?.id) {
+                const { client_id } = decodeObject(instanceId);
+                await query(`UPDATE broadcast_log SET delivery_status = ?, msg_id = ?, instance_id = ? WHERE id = ?`, [
+                    "sent", send.key.id, client_id, logObj.id
+                ]);
+                console.log(`✅ [Broadcast] Mensaje entregado con éxito a ${rawNumber}`);
             } else {
-                // check if number is available 
-                const check = await isExists(session, jid, false)
-                if (!check) {
-                    await query(`UPDATE broadcast_log SET delivery_status = ? WHERE id = ?`, [
-                        "Number NA",
-                        boradCastId
-                    ])
-                } else {
-
-                    if (actualObj) {
-
-                        // adding variables 
-                        const returnObjWithVariables = mergeVariables({
-                            content: actualObj,
-                            varJson: JSON.parse(logObj?.contact),
-                            type: templet?.type?.toLowerCase()
-                        })
-
-                        const send = await session.sendMessage(jid, returnObjWithVariables)
-                        if (send?.key?.id) {
-
-                            const { client_id } = decodeObject(instanceId)
-
-                            await query(`UPDATE broadcast_log SET delivery_status = ?, msg_id = ?, instance_id = ? WHERE id = ?`, [
-                                "sent",
-                                send?.key?.id,
-                                client_id,
-                                boradCastId
-                            ])
-
-                        } else {
-                            await query(`UPDATE broadcast_log SET delivery_status = ?, err = ? WHERE broadcast_id = ?`, [
-                                "failed",
-                                send.toString(),
-                                boradCastId
-                            ])
-                        }
-                    }
-                }
+                console.log(`❌ [Broadcast] Fallo al enviar mensaje a ${rawNumber}`);
+                await query(`UPDATE broadcast_log SET delivery_status = ?, err = ? WHERE id = ?`, [
+                    "failed", "No message ID returned", logObj.id
+                ]);
             }
 
         } catch (err) {
-            await query(`UPDATE broadcast_log SET delivery_status = ?, err = ? WHERE broadcast_id = ?`, [
-                "failed",
-                err.toString(),
-                log?.log?.broadcast_id
-            ])
+            console.error(`❌ [Broadcast] Error catastrófico enviando a ${logObj.send_to}:`, err);
+            await query(`UPDATE broadcast_log SET delivery_status = ?, err = ? WHERE id = ?`, [
+                "failed", err.toString(), logObj.id
+            ]);
         }
-    })
-    await Promise.all(promise)
-}
 
-const DELAYFROM = 10
-const DELAYTO = 35
+        // 8. Retraso aleatorio para evitar baneos
+        const dFrom = b.delay_from || 10;
+        const dTo = b.delay_to || 30;
+        const randomSecs = Math.floor(Math.random() * (dTo - dFrom + 1)) + dFrom;
+        console.log(`⏱️ [Broadcast] Durmiendo ${randomSecs} segundos antes del próximo mensaje...`);
+        await delay(randomSecs * 1000);
+    }
+
+    return processedAny;
+}
 
 async function broadcastLoopInit() {
     try {
-
-        const logs = await getBroadLog()
-
-        if (logs && logs.length > 0) {
-            await sendMessage(logs)
-        } else {
-            console.log('no broadcast found')
+        const processed = await processPendingBroadcasts();
+        if (!processed) {
+            // Si no hay nada que procesar, el motor descansa 5 segundos y vuelve a buscar
+            await delay(5000);
         }
-
-        await delayRandom(DELAYFROM, DELAYTO)
-
-        await broadcastLoopInit()
     } catch (err) {
-        console.log(err)
+        console.error("🔥 [Broadcast Loop] Error crítico en el loop principal:", err);
+        await delay(5000); 
+    } finally {
+        // LA MAGIA: Pase lo que pase, el motor se vuelve a llamar a sí mismo. JAMÁS MUERE.
+        broadcastLoopInit();
     }
 }
 
-module.exports = { broadcastLoopInit }
+module.exports = { broadcastLoopInit };

@@ -321,6 +321,19 @@ const init = () => {
         }
     });
 };
+const isExists = async (session, jid, isGroup = false) => {
+    try {
+        if (isGroup) {
+            const groupMeta = await session.groupMetadata(jid);
+            return !!groupMeta.id;
+        } else {
+            const [result] = await session.onWhatsApp(jid);
+            return result?.exists || false;
+        }
+    } catch (error) {
+        return false;
+    }
+};
 
 module.exports = {
     isSessionExists,
@@ -330,5 +343,6 @@ module.exports = {
     cleanup,
     init,
     downloadMediaMessage,
-    getUrlInfo
+    getUrlInfo,
+    isExists
 };

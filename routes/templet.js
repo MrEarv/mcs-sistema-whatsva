@@ -1,28 +1,25 @@
 const router = require('express').Router()
 const { query } = require('../database/dbpromise.js')
-const bcrypt = require('bcrypt')
-const { sign } = require('jsonwebtoken')
 const validateUser = require('../middlewares/user.js')
-const moment = require('moment')
-const { isValidEmail, encodeObject, readJSONFile, getFileExtension, areMobileNumbersFilled } = require('../functions/function.js')
-const randomstring = require('randomstring')
-const { getSession, } = require('../middlewares/req.js')
-const csv = require('csv-parser');
-const mime = require('mime-types')
 const { checkPlanExpiry } = require('../middlewares/planValidator.js')
+
+// Helper universal para desempacar los datos que manda React
+const extractPayload = (req) => req.body?.data?.payload || req.body?.data || req.body;
 
 // adding one 
 router.post('/add_new', validateUser, checkPlanExpiry, async (req, res) => {
     try {
-        const { title, type, content } = req.body
+        const payload = extractPayload(req);
+        const { title, type, content } = payload;
 
         if (!title || !type || !content) {
             return res.json({
+                success: false,
                 msg: "Title is required"
             })
         }
 
-        await query(`INSERT INTO templet (uid, content, type, title) VALUES (?,?,?,?)`, [
+        await query(`INSERT INTO templets (uid, content, type, title) VALUES (?,?,?,?)`, [
             req.decode.uid,
             JSON.stringify(content),
             type,
@@ -55,7 +52,8 @@ router.get('/my_templet', validateUser, async (req, res) => {
 // del a templet 
 router.post('/del_templet', validateUser, async (req, res) => {
     try {
-        const { id } = req.body
+        const payload = extractPayload(req);
+        const { id } = payload;
 
         await query(`DELETE FROM templets WHERE id = ? AND uid = ?`, [
             id, req.decode.uid

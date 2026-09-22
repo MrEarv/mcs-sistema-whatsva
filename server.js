@@ -39,11 +39,21 @@ app.get('*', (req, res) => {
 // --------------------
 // Inicializar servidor
 // --------------------
+const { warmerLoopInit } = require('./loops/warmerLoop.js');
+const { broadcastLoopInit } = require('./loops/broadcastLoop.js');
+
 const PORT = process.env.PORT || 3010;
 const server = app.listen(PORT, async () => {
     console.log(`WhatsApp server is running on port ${PORT}`);
-    // Inicializamos sesiones
     await init();
+
+    setTimeout(() => {
+        console.log("Encendiendo motor de Campañas Masivas...");
+        broadcastLoopInit();
+        
+        console.log("Encendiendo motor del Calentador...");
+        warmerLoopInit();
+    }, 3000);
 });
 
 // --------------------
