@@ -386,19 +386,15 @@ router.post('/add_phonebook', validateUser, checkPlanExpiry, async (req, res) =>
             return res.json({ msg: "Please give a title to the phonebook" })
         }
 
-        // check already 
-        const alreadyExisted = await query(`SELECT * FROM phonebook WHERE title = ?`, [title])
+        const alreadyExisted = await query(`SELECT * FROM phonebook WHERE name = ? AND uid = ?`, [title, req.decode.uid])
 
         if (alreadyExisted.length > 0) {
             return res.json({ msg: "Duplicate phonebook title found" })
         }
 
-        const ran = randomstring.generate(5)
-
-        await query(`INSERT INTO phonebook (uid, title, phonebook_id) VALUES (?,?,?)`, [
+        await query(`INSERT INTO phonebook (uid, name) VALUES (?,?)`, [
             req.decode.uid,
-            title,
-            ran
+            title
         ])
 
         res.json({ msg: "Phonebook was added", success: true })
@@ -429,15 +425,13 @@ router.post('/del_book', validateUser, checkPlanExpiry, async (req, res) => {
     try {
         const { id } = req.body
 
-        // getting phone book
-        const [book] = await query(`SELECT * FROM phonebook WHERE id = ?`, [id])
-
+        // CORRECCIÓN: Usamos el ID directamente
         await query(`DELETE FROM phonebook WHERE id = ? AND uid = ?`, [
             id,
             req.decode.uid
         ])
 
-        await query(`DELETE FROM contact WHERE phonebook_id = ? AND uid = ?`, [book?.phonebook_id, req.decode.uid])
+        await query(`DELETE FROM contact WHERE phonebook_id = ? AND uid = ?`, [id, req.decode.uid])
 
         res.json({ msg: "Phonebook was deleted", success: true })
 
@@ -462,11 +456,11 @@ router.post('/add_contact', validateUser, checkPlanExpiry, checkPhonebookContact
             uid,
             name,
             mobile,
-            var_one,
-            var_two,
-            var_three,
-            var_four,
-            var_five
+            var1,
+            var2,
+            var3,
+            var4,
+            var5
         ) VALUES (?,?,?,?,?,?,?,?,?,?)`, [
             phonebook_name,
             phonebook_id,
@@ -568,9 +562,8 @@ router.post('/import_contacts', validateUser, checkPlanExpiry, checkPhonebookCon
             return res.json({ msg: "Please check your CSV there one or more mobile not filled", csvData })
         }
 
-        // Flatten the array of objects into an array of values
         const values = csvData.map(item => [
-            req.decode.uid,  // assuming uid is available in each item
+            req.decode.uid,  
             id,
             phonebook_name,
             item.name,
@@ -582,8 +575,7 @@ router.post('/import_contacts', validateUser, checkPlanExpiry, checkPhonebookCon
             item.var5
         ]);
 
-        // Execute the query
-        await query(`INSERT INTO contact (uid, phonebook_id, phonebook_name, name, mobile, var_one, var_two, var_three, var_four, var_five) VALUES ?`, [values]);
+        await query(`INSERT INTO contact (uid, phonebook_id, phonebook_name, name, mobile, var1, var2, var3, var4, var5) VALUES ?`, [values]);
 
         res.json({ success: true, msg: "Contacts were inserted" });
 
@@ -1042,47 +1034,34 @@ router.get('/modify_password', validateUser, async (req, res) => {
 // edit phonebook 
 router.post('/update_phonebook', validateUser, async (req, res) => {
     try {
-        const { id, newTitle, title, phonebook_id } = req.body
+        const { id, newTitle } = req.body
 
         if (!id || !newTitle) {
-            return res.json({
-                success: false,
-                msg: "Please enter phonebook title"
-            })
+            return res.json({ success: false, msg: "Please enter phonebook title" })
         }
 
-        // getting already 
-        const getExist = await query(`SELECT * FROM phonebook WHERE title = ? AND uid = ?`, [
+        const getExist = await query(`SELECT * FROM phonebook WHERE name = ? AND uid = ?`, [
             newTitle,
             req.decode.uid
         ])
 
-        if (getExist?.length > 0) {
-            if (getExist[0]?.id !== id) {
-                return res.json({
-                    msg: "Duplicate phonebook found title found"
-                })
-            }
+        if (getExist?.length > 0 && getExist[0]?.id !== id) {
+            return res.json({ msg: "Duplicate phonebook found title found" })
         }
 
-        // updating phonebok 
-        await query(`UPDATE phonebook SET title = ?, uid = ? WHERE phonebook_id = ?`, [
+        await query(`UPDATE phonebook SET name = ? WHERE id = ? AND uid = ?`, [
             newTitle,
-            req.decode.uid,
-            phonebook_id
+            id,
+            req.decode.uid
         ])
 
-        // updating in contacts 
         await query(`UPDATE contact SET phonebook_name = ? WHERE uid = ? AND phonebook_id = ?`, [
             newTitle,
             req.decode.uid,
-            phonebook_id
+            id
         ])
 
-        res.json({
-            success: true,
-            msg: "Phonebook was updated"
-        })
+        res.json({ success: true, msg: "Phonebook was updated" })
 
     } catch (err) {
         console.log(err)
@@ -1113,12 +1092,12 @@ router.post('/update_contact_number', validateUser, async (req, res) => {
 
         await query(`UPDATE contact SET
             name = ?,
-            mobile_with_country_code = ?,
-            var_one = ?,
-            var_two = ?,
-            var_three = ?,
-            var_four = ?,
-            var_five = ?
+            mobile = ?,
+            var1 = ?,
+            var2 = ?,
+            var3 = ?,
+            var4 = ?,
+            var5 = ?
             WHERE id = ?`, [
             name,
             mobile_with_country_code,

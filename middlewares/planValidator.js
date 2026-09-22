@@ -47,17 +47,19 @@ const checkPhonebookContactLimit = async (req, res, next) => {
     try {
         const plan = req.plan
 
-        const contactLimit = plan?.phonebook_contact_limit > 0 ? parseInt(plan?.phonebook_contact_limit) : 0
+        const rawLimit = plan?.contact_limit || plan?.phonebook_contact_limit || 0;
+        const contactLimit = parseInt(rawLimit);
+        
         const getUserContact = await query(`SELECT * FROM contact WHERE uid = ?`, [req.decode.uid])
 
-        if (getUserContact?.length >= contactLimit) {
-            return res.json({ msg: "Your phonebook contacts limit was reached" })
+        if (contactLimit > 0 && getUserContact?.length >= contactLimit) {
+            return res.json({ success: false, msg: "Límite de contactos alcanzado para tu plan actual." })
         } else {
             next()
         }
     } catch (err) {
         console.log(err)
-        res.json({ msg: "server error", err })
+        res.json({ success: false, msg: "server error", err })
     }
 }
 
