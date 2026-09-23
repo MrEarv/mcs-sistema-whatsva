@@ -69,53 +69,57 @@ async function checkPlanAndAction(uid) {
 
 async function runWarmer(warmer) {
     try {
-
-        const instanceArr = JSON.parse(warmer?.instances)
-        const scriptArr = warmer?.script
+        const instanceArr = JSON.parse(warmer?.instances);
+        const scriptArr = warmer?.script;
+        
         if (instanceArr.length > 1) {
+            await checkPlanAndAction(warmer?.uid);
 
-            await checkPlanAndAction(warmer?.uid)
+            const instanceFrom = getRandomElementFromArray(instanceArr);
+            const script = getRandomElementFromArray(scriptArr);
+            const instanceTo = getRandomElementFromArray(instanceArr, instanceFrom);
 
-            const instanceFrom = getRandomElementFromArray(instanceArr)
-            const script = getRandomElementFromArray(scriptArr)
-            const instanceTo = getRandomElementFromArray(instanceArr, instanceFrom)
+            const { decodeObject } = require('../functions/function');
+            const decodedTo = decodeObject(instanceTo);
+            const decodedFrom = decodeObject(instanceFrom);
 
-            // getting to instance from db 
-            const instanceToObj = await query(`SELECT * FROM instance WHERE instance_id = ?`, [instanceTo])
+            const instanceToObj = await query(`SELECT * FROM instance WHERE uid = ? AND title = ?`, [decodedTo.uid, decodedTo.client_id]);
 
-            // getting session 
-            const session = await getSession(instanceFrom)
-            if (session && instanceToObj?.length > 0) {
-                console.log({
-                    instanceToObj
-                })
-                const exist = await isExists(session, instanceToObj[0]?.jid, false)
-                if (exist) {
-                    const to = `${instanceToObj[0]?.jid}@s.whatsapp.net`
-                    const msg = {
-                        text: script?.message
-                    }
+            const session = await getSession(instanceFrom);
 
-                    console.log({
-                        to
-                    })
+            if (!session) {
+                console.log(`[Calentador] ❌ Sesión emisora desconectada o no encontrada: ${decodedFrom.client_id}`);
+                return;
+            }
+            if (instanceToObj?.length === 0) {
+                console.log(`[Calentador] ❌ Instancia receptora no encontrada en BD: ${decodedTo.client_id}`);
+                return;
+            }
 
-                    await sendTyping(session, instanceToObj[0]?.jid)
-                    await session.sendMessage(to, msg)
+            const targetNumber = instanceToObj[0]?.number;
+            if (!targetNumber) {
+                console.log(`[Calentador] ❌ La instancia receptora '${decodedTo.client_id}' no tiene número registrado.`);
+                return;
+            }
 
-                } else {
-                    console.log(`Jid ${instanceToObj[0]?.jid} does not exist`)
-                }
+            const targetJid = `${targetNumber}@s.whatsapp.net`;
+            const exist = await isExists(session, targetJid, false);
 
+            if (exist) {
+                const msg = { text: script?.message };
+                
+                console.log(`[Calentador] 🤖 Enviando mensaje simulado de '${decodedFrom.client_id}' a '${decodedTo.client_id}'...`);
+                
+                await sendTyping(session, targetJid);
+                await session.sendMessage(targetJid, msg);
+                
+                console.log(`[Calentador] ✅ Mensaje entregado con éxito.`);
             } else {
-                console.log("session not found so turned off", instanceFrom)
-                // await query(`UPDATE warmers SET is_active = ? WHERE uid = ?`, [0, warmer?.uid])
-                console.log(`seesion not found ${instanceFrom}`)
+                console.log(`[Calentador] ❌ El número receptor ${targetJid} no existe en WhatsApp.`);
             }
         }
-
     } catch (err) {
-        console.log(`Error found in in runWarmer`, err)
+        console.log(`Error crítico en runWarmer:`, err);
     }
 }
 

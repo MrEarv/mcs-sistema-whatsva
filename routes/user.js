@@ -289,7 +289,27 @@ router.get('/get_warmer_msg', validateUser, async (req, res) => {
         console.log(err)
     }
 })
+// del warmer msg 
+router.post('/del_warmer_msg', validateUser, async (req, res) => {
+    try {
+        const { id } = req.body;
 
+        if (!id) {
+            return res.json({ success: false, msg: "Falta el ID del mensaje" });
+        }
+
+        await query(`DELETE FROM warmer_script WHERE id = ? AND uid = ?`, [
+            id,
+            req.decode.uid
+        ]);
+
+        res.json({ success: true, msg: "Mensaje eliminado del script" });
+
+    } catch (err) {
+        res.json({ success: false, msg: "algo salió mal", err });
+        console.log(err);
+    }
+});
 // get my warmer 
 router.get("/get_my_warmer", validateUser, async (req, res) => {
     try {
