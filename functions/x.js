@@ -149,25 +149,65 @@ async function convertMsg({ obj = {}, outgoing = false }) {
     return null;
 }
 
+// MEMORIA DE FUSIÓN: Funciones para mapear @lid a números reales
+function getRealJidFromLid(uid, lid) {
+    const mapPath = path.join(__dirname, `../conversations/${uid}_lids.json`);
+    if (fs.existsSync(mapPath)) {
+        const map = JSON.parse(fs.readFileSync(mapPath, 'utf8'));
+        return map[lid] || null;
+    }
+    return null;
+}
+
+function saveLidMapping(uid, lid, realJid) {
+    const mapPath = path.join(__dirname, `../conversations/${uid}_lids.json`);
+    let map = {};
+    if (fs.existsSync(mapPath)) {
+        map = JSON.parse(fs.readFileSync(mapPath, 'utf8'));
+    }
+    map[lid] = realJid;
+    fs.writeFileSync(mapPath, JSON.stringify(map, null, 2));
+}
+
 async function extractData(m, sessionId) {
-    const { uid } = decodeObject(sessionId)
-
-    const chatId = uid ? encodeChatId({
-        ins: sessionId,
-        grp: m?.key?.remoteJid?.endsWith("@g.us") ? true : false,
-        num: m?.key?.remoteJid?.endsWith("@g.us")
-            ? m?.key?.remoteJid?.replace("@g.us", "")
-            : m?.key?.remoteJid?.replace("@s.whatsapp.net", "")
-    }) : { na: "na" }
-
-    const getUser = await query(`SELECT * FROM user WHERE uid = ?`, [
-        uid
-    ])
+    const { uid } = decodeObject(sessionId);
+    let remoteJid = m?.key?.remoteJid;
 
     const actualObj = await convertMsg({
         obj: m,
         outgoing: m?.key?.fromMe ? true : false
-    })
+    });
+
+    // FUSIÓN INTELIGENTE DE CHATS (@LID -> Número Real)
+    if (remoteJid?.includes('@lid')) {
+        let realJid = getRealJidFromLid(uid, remoteJid);
+
+        // Si no conocemos este alias, lo descubrimos usando el mensaje al que respondió
+        if (!realJid && actualObj?.context?.id) {
+            const log = await query(`SELECT send_to FROM broadcast_log WHERE msg_id = ?`, [actualObj.context.id]);
+            if (log.length > 0) {
+                // Reconstruimos el número real y lo guardamos para el futuro
+                realJid = `${String(log[0].send_to).replace(/\D/g, '')}@s.whatsapp.net`;
+                saveLidMapping(uid, remoteJid, realJid); 
+            }
+        }
+
+        // Si logramos descubrir su identidad, unificamos el chat en tiempo real
+        if (realJid) {
+            remoteJid = realJid;
+            if (actualObj) actualObj.remoteJid = realJid;
+        }
+    }
+
+    const chatId = uid ? encodeChatId({
+        ins: sessionId,
+        grp: remoteJid?.endsWith("@g.us") ? true : false,
+        num: remoteJid?.endsWith("@g.us")
+            ? remoteJid?.replace("@g.us", "")
+            : remoteJid?.replace("@s.whatsapp.net", "").replace("@lid", "")
+    }) : { na: "na" };
+
+    const getUser = await query(`SELECT * FROM user WHERE uid = ?`, [uid]);
 
     return {
         uid: uid,
@@ -176,8 +216,8 @@ async function extractData(m, sessionId) {
         actualObj,
         userData: getUser[0],
         msgFromMe: m?.key?.fromMe,
-        remoteJid: m?.key?.remoteJid
-    }
+        remoteJid: remoteJid // Devolvemos el identificador unificado
+    };
 }
 
 async function updateReaction({ uid, chatId, reaction, msgId, actualObj }) {
@@ -438,7 +478,7 @@ function sendPollMsg({ uid, msgObj, toJid, saveObj, chatId, session, sessionId, 
         try {
 
             if (!session) {
-                return res.json({
+                return resolve({
                     success: false,
                     msg: "Instance not found. Please try again"
                 })
@@ -504,7 +544,7 @@ function sendTextMsg({ uid, msgObj, toJid, saveObj, chatId, session, sessionId }
         try {
 
             if (!session) {
-                return res.json({
+                return resolve({
                     success: false,
                     msg: "Instance not found. Please try again"
                 })
@@ -569,7 +609,7 @@ function sendMedia({ uid, msgObj, toJid, saveObj, chatId, session, sessionId, se
     return new Promise(async (resolve) => {
         try {
             if (!session) {
-                return res.json({
+                return resolve({
                     success: false,
                     msg: "Instance not found. Please try again"
                 })
