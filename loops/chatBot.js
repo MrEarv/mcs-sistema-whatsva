@@ -834,11 +834,8 @@ async function chatbotInit(m, wa, sessionId, session, pollMessage) {
             const { uid, client_id } = decodeObject(sessionId)
 
             if (await checkPlan(uid)) {
-                const chatbots = await query(`SELECT * FROM chatbot WHERE uid = ? AND active = ?`, [uid, 1]);
+                const chatbots = await query(`SELECT * FROM chatbot WHERE uid = ? AND active = ? AND instance_id = ?`, [uid, 1, sessionId]);
 
-                // console.log({
-                //     chatbots
-                // })
                 if (chatbots.length > 0) {
                     await Promise.all(chatbots.map((i) => runChatbot(i, msg, uid, client_id, m, sessionId, session)));
                 }

@@ -40,25 +40,36 @@ function resolveTemplet(templet) {
         case 'text': 
             return content;
         case 'image': 
+            const imgName = getFilename(content?.filename || content?.url || content?.image?.url);
             return { 
-                image: { url: `${__dirname}/../client/public/media/${getFilename(content?.filename || content?.url || content?.image?.url)}` }, 
-                caption: content?.legend || content?.caption || null 
+                image: { url: `${__dirname}/../client/public/media/${imgName}` }, 
+                caption: content?.legend || content?.caption || null,
+                fileName: imgName,
+                mimetype: "image/jpeg"
             };
         case 'doc': 
+            const docName = getFilename(content?.filename || content?.url || content?.document?.url);
             return { 
-                document: { url: `${__dirname}/../client/public/media/${getFilename(content?.filename || content?.url || content?.document?.url)}` }, 
-                fileName: content?.originalName || content?.fileName, 
-                caption: content?.legend || content?.caption || null 
+                document: { url: `${__dirname}/../client/public/media/${docName}` }, 
+                fileName: content?.originalName || content?.fileName || docName, 
+                caption: content?.legend || content?.caption || null,
+                mimetype: "application/pdf"
             };
         case 'aud': 
+            const audName = getFilename(content?.filename || content?.url || content?.audio?.url);
             return { 
-                audio: { url: `${__dirname}/../client/public/media/${getFilename(content?.filename || content?.url || content?.audio?.url)}` }, 
+                audio: { url: `${__dirname}/../client/public/media/${audName}` }, 
+                fileName: audName,
+                mimetype: "audio/ogg",
                 ptt: true 
             };
         case 'video': 
+            const vidName = getFilename(content?.filename || content?.url || content?.video?.url);
             return { 
-                video: { url: `${__dirname}/../client/public/media/${getFilename(content?.filename || content?.url || content?.video?.url)}` }, 
-                caption: content?.legend || content?.caption || null 
+                video: { url: `${__dirname}/../client/public/media/${vidName}` }, 
+                caption: content?.legend || content?.caption || null,
+                fileName: vidName,
+                mimetype: "video/mp4"
             };
         case 'loc': 
             return { 
