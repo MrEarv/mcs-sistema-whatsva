@@ -5,24 +5,12 @@ function hi() {
 function fetchProfileUrl(session, jid, nonHd) {
     return new Promise(async (resolve) => {
         try {
-            const ppUrl = nonHd ? await session.profilePictureUrl(jid) : await session.profilePictureUrl(jid, 'image')
-
-            if (ppUrl?.data == 404) {
-                return resolve(null)
-            }
-
-            if (ppUrl) {
-                resolve(ppUrl)
-            } else {
-                resolve(null)
-            }
-
+            const ppUrl = nonHd ? await session.profilePictureUrl(jid) : await session.profilePictureUrl(jid, 'image');
+            resolve(ppUrl || null);
         } catch (err) {
-            console.log('error found in fetchProfileUrl()')
-            console.log(err)
-            resolve(null)
+            resolve(null);
         }
-    })
+    });
 }
 
 
