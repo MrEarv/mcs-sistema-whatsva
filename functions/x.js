@@ -223,19 +223,43 @@ async function extractData(m, sessionId) {
             }
         }
 
+        if (!realJid && actualObj?.senderName) {
+            const possibleChats = await query(`
+                SELECT sender_jid FROM chats 
+                WHERE uid = ? AND instance_id = ? AND sender_name = ? AND sender_jid NOT LIKE '%@lid%'
+            `, [uid, sessionId, actualObj.senderName]);
+            
+            if (possibleChats.length === 1) {
+                realJid = possibleChats[0].sender_jid;
+                saveLidMapping(uid, remoteJid, realJid);
+            }
+        }
+
         if (realJid) {
             remoteJid = realJid;
             if (actualObj) actualObj.remoteJid = realJid;
         }
     }
 
-    const chatId = uid ? encodeChatId({
-        ins: sessionId,
-        grp: remoteJid?.endsWith("@g.us") ? true : false,
-        num: remoteJid?.endsWith("@g.us")
-            ? remoteJid?.replace("@g.us", "")
-            : remoteJid?.replace("@s.whatsapp.net", "").replace("@lid", "")
-    }) : { na: "na" };
+    let isGroup = remoteJid?.endsWith("@g.us");
+    let num = isGroup ? remoteJid.replace("@g.us", "") : remoteJid.replace("@s.whatsapp.net", "").replace("@lid", "");
+    let chatId = null;
+
+    if (!isGroup && num.length >= 10) {
+        const last10 = num.slice(-10);
+        const allChats = await query(`SELECT chat_id, sender_jid, sender_mobile FROM chats WHERE uid = ? AND instance_id = ?`, [uid, sessionId]);
+        for (const c of allChats) {
+            if ((c.sender_jid && String(c.sender_jid).includes(last10)) || 
+                (c.sender_mobile && String(c.sender_mobile).includes(last10))) {
+                chatId = c.chat_id;
+                break;
+            }
+        }
+    }
+
+    if (!chatId) {
+        chatId = uid ? encodeChatId({ ins: sessionId, grp: isGroup, num: num }) : { na: "na" };
+    }
 
     const getUser = await query(`SELECT * FROM user WHERE uid = ?`, [uid]);
 
@@ -246,7 +270,7 @@ async function extractData(m, sessionId) {
         actualObj,
         userData: getUser[0],
         msgFromMe: m?.key?.fromMe,
-        remoteJid: remoteJid // Devolvemos el identificador unificado Y LIMPIO
+        remoteJid: remoteJid 
     };
 }
 
@@ -259,13 +283,25 @@ async function returnStateDelivery(obj, uid, sessionId) {
         if (realJid) remoteJid = realJid;
     }
 
-    const chatId = encodeChatId({
-        ins: sessionId,
-        grp: remoteJid.endsWith("@g.us") ? true : false,
-        num: remoteJid.endsWith("@g.us") ?
-            remoteJid.replace("@g.us", "") :
-            remoteJid.replace("@s.whatsapp.net", "").replace("@lid", "")
-    });
+    let isGroup = remoteJid.endsWith("@g.us");
+    let num = isGroup ? remoteJid.replace("@g.us", "") : remoteJid.replace("@s.whatsapp.net", "").replace("@lid", "");
+    let chatId = null;
+
+    if (!isGroup && num.length >= 10) {
+        const last10 = num.slice(-10);
+        const allChats = await query(`SELECT chat_id, sender_jid, sender_mobile FROM chats WHERE uid = ? AND instance_id = ?`, [uid, sessionId]);
+        for (const c of allChats) {
+            if ((c.sender_jid && String(c.sender_jid).includes(last10)) || 
+                (c.sender_mobile && String(c.sender_mobile).includes(last10))) {
+                chatId = c.chat_id;
+                break;
+            }
+        }
+    }
+
+    if (!chatId) {
+        chatId = encodeChatId({ ins: sessionId, grp: isGroup, num: num });
+    }
 
     const getUser = await query(`SELECT * FROM user WHERE uid = ?`, [uid]);
 
@@ -406,18 +442,73 @@ async function webhookIncoming(m, sessionId, session) {
     }
 }
 
-
-
 async function updateDeliverySocket({ uid, chatId, obj }) {
-    const io = getIOInstance()
-    const getId = await query(`SELECT * FROM rooms WHERE uid = ?`, [uid])
-    const socketId = getId[0]?.socket_id
+    const io = getIOInstance();
+    const getId = await query(`SELECT * FROM rooms WHERE uid = ?`, [uid]);
+    const socketId = getId[0]?.socket_id;
 
-    io.to(socketId).emit('update_delivery_status', {
-        chatId: chatId,
-        status: obj?.update?.status === 4 ? "read" : "delivered",
-        msgId: obj?.key?.id,
-    })
+    if (socketId) {
+        io.to(socketId).emit('update_delivery_status', {
+            chatId: chatId,
+            status: obj?.update?.status === 4 ? "read" : "delivered",
+            msgId: obj?.key?.id,
+        });
+    }
+}
+
+async function updateDelivery(obj, sessionId, pollMessage) {
+    await delay(2000)
+    if (pollMessage && pollMessage?.length > 0) {
+        const { uid } = decodeObject(sessionId)
+        await updatePool(pollMessage, uid, obj?.key?.id, obj?.update?.pollUpdates[0]?.pollUpdateMessageKey?.participant)
+    }
+
+    if (obj?.key?.fromMe) {
+        const { uid } = decodeObject(sessionId)
+        
+        let rawRemoteJid = obj?.key?.remoteJid || "";
+        if (rawRemoteJid.includes('@lid')) {
+            try {
+                const msgId = obj?.key?.id;
+                const log = await query(`SELECT send_to FROM broadcast_log WHERE msg_id = ?`, [msgId]);
+                if (log.length > 0) {
+                    const realJid = `${String(log[0].send_to).replace(/\D/g, '')}@s.whatsapp.net`;
+                    saveLidMapping(uid, rawRemoteJid, realJid);
+                }
+            } catch (e) {
+                console.error("Error atrapando LID en updateDelivery:", e);
+            }
+        }
+
+        const state = await returnStateDelivery(obj, uid, sessionId)
+
+        if (state.userData?.opened_chat_instance === sessionId) {
+            await updateDeliverySocket({
+                uid: uid,
+                chatId: state.chatId,
+                obj: obj,
+                sessionId: sessionId
+            })
+        }
+
+        const delivery_time = Date.now() / 1000
+        await query(`UPDATE broadcast_log SET delivery_status = ?, delivery_time = ? WHERE msg_id = ?`, [
+            obj?.update?.status === 4 ? "read" : "delivered",
+            delivery_time,
+            obj?.key?.id
+        ])
+
+        const filePath = `${__dirname}/../conversations/inbox/${uid}/${state.chatId}.json`
+
+        setTimeout(() => {
+            updateMessageObjectInFile(
+                filePath,
+                obj?.key?.id,
+                "status",
+                obj?.update?.status === 4 ? "read" : "delivered"
+            )
+        }, 1000);
+    }
 }
 
 function extractVoters(options) {

@@ -804,25 +804,37 @@ async function runChatbot(i, msg, uid, client_id, m, sessionId, session) {
             }
 
             for (const k of answer) {
-                const chatId = encodeChatId({
-                    ins: sessionId,
-                    grp: cleanJid.endsWith("@g.us") ? true : false,
-                    num: cleanJid.endsWith("@g.us") ?
-                        cleanJid.replace("@g.us", "") :
-                        cleanJid.replace("@s.whatsapp.net", "").replace("@lid", "")
-                });
+                let isGroup = cleanJid.endsWith("@g.us");
+                let num = isGroup ? cleanJid.replace("@g.us", "") : cleanJid.replace("@s.whatsapp.net", "").replace("@lid", "");
+                let chatId = null;
+
+                if (!isGroup && num.length >= 10) {
+                    const last10 = num.slice(-10);
+                    const allChats = await query(`SELECT chat_id, sender_jid, sender_mobile FROM chats WHERE uid = ? AND instance_id = ?`, [uid, sessionId]);
+                    for (const c of allChats) {
+                        if ((c.sender_jid && String(c.sender_jid).includes(last10)) || 
+                            (c.sender_mobile && String(c.sender_mobile).includes(last10))) {
+                            chatId = c.chat_id;
+                            break;
+                        }
+                    }
+                }
+
+                if (!chatId) {
+                    chatId = encodeChatId({ ins: sessionId, grp: isGroup, num: num });
+                }
 
                 const { msgObj, saveObj, sendObj } = await makeObjs(msg, k);
 
                 if (saveObj?.type === "text" || saveObj?.type === "poll") {
                     await delay(1000);
-                    const resp = await sendTextMsg({
+                    await sendTextMsg({
                         uid, msgObj, toJid: cleanJid, saveObj, chatId, session, sessionId
                     });
                 } else {
                     if (saveObj?.type) {
                         await delay(1000);
-                        const resp = await sendMedia({
+                        await sendMedia({
                             uid, msgObj, toJid: cleanJid, saveObj, chatId, session, sessionId, sendObj
                         });
                     }

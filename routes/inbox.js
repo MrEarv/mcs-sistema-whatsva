@@ -90,27 +90,41 @@ router.get("/get_my_chats", validateUser, checkPlanExpiry, async (req, res) => {
 router.post('/send_text', validateUser, checkPlanExpiry, async (req, res) => {
     try {
         const payload = extractPayload(req);
-        const { text, toJid, toName, chatId, instance } = payload;
+        
+        const text = payload.text;
+        const toName = payload.toName || payload.name || "Usuario";
+        const chatId = payload.chatId || payload.id;
+        const instance = payload.instance || payload.sessionId || payload.instance_id;
 
-        const finalToJid = toJid || chatId;
-        const finalChatId = chatId || toJid;
+        let finalToJid = payload.toJid || payload.remoteJid || payload.jid || payload.receiver;
+
+        if (!finalToJid && chatId) {
+            const dbChat = await query(`SELECT sender_jid FROM chats WHERE chat_id = ? AND uid = ?`, [chatId, req.decode.uid]);
+            if (dbChat.length > 0) {
+                finalToJid = dbChat[0].sender_jid;
+            }
+        }
+
+        if (finalToJid && !finalToJid.includes('@')) {
+            finalToJid = `${finalToJid}@s.whatsapp.net`;
+        }
 
         if (!text || !finalToJid || !instance) {
-            return res.json({ success: false, msg: "Not enough input provided" });
+            return res.json({ success: false, msg: "Faltan datos de destino (toJid, instance, text)" });
         }
 
         const msgObj = { text };
         const uid = req.decode.uid;
 
         const saveObj = {
-            "group": false,
+            "group": finalToJid.includes("@g.us"),
             "type": "text",
             "msgId": "",
             "remoteJid": finalToJid,
             "msgContext": msgObj,
             "reaction": "",
             "timestamp": "",
-            "senderName": toName || "Usuario",
+            "senderName": toName,
             "status": "sent",
             "star": false,
             "route": "outgoing",
@@ -119,12 +133,13 @@ router.post('/send_text', validateUser, checkPlanExpiry, async (req, res) => {
 
         const session = await getSession(instance);
 
+        // Disparamos el mensaje con el destino matemáticamente perfecto
         const resp = await sendTextMsg({
             uid,
             msgObj,
             toJid: finalToJid,
             saveObj,
-            chatId: finalChatId,
+            chatId: chatId, // Usamos el ID original para que se guarde en la burbuja correcta
             session,
             sessionId: instance
         });
