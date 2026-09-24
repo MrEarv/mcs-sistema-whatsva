@@ -1,4 +1,4 @@
-const { downloadMediaMessage, delay } = require('@whiskeysockets/baileys');
+const { downloadMediaMessage, delay, generateMessageIDV2, generateMessageID } = require('@whiskeysockets/baileys');
 const fs = require('fs')
 const mime = require('mime-types');
 const randomstring = require('randomstring')
@@ -13,16 +13,18 @@ if (!global.processedMsgIds) {
     global.processedMsgIds = new Set();
 }
 
+// Tiempo máximo (ms) esperando el ack del servidor de WhatsApp tras enviar
+const ACK_WAIT_MS = Number(process.env.WA_ACK_WAIT_MS) || 6000;
 
 function downloadMediaPromise(m, mimetype) {
     return new Promise(async (resolve) => {
         try {
             const bufferMsg = await downloadMediaMessage(m, 'buffer', {}, {})
             const randomSt = randomstring.generate(6)
-            
+
             const cleanMime = mimetype ? mimetype.split(';')[0] : '';
             let ext = mime.extension(cleanMime);
-            
+
             if (!ext) {
                 if (cleanMime.includes('audio')) ext = 'ogg';
                 else if (cleanMime.includes('video')) ext = 'mp4';
@@ -44,7 +46,7 @@ function downloadMediaPromise(m, mimetype) {
 }
 async function convertMsg({ obj = {}, outgoing = false }) {
     const timestamp = Math.floor(Date.now() / 1000);
-    
+
     if (!obj?.key?.remoteJid || obj.key.remoteJid === "status@broadcast") return null;
 
     const isGroup = obj.key.remoteJid.endsWith("@g.us");
@@ -124,7 +126,7 @@ async function convertMsg({ obj = {}, outgoing = false }) {
         const downloadMedia = await downloadMediaPromise(obj, obj.message.stickerMessage.mimetype);
         const ctx = obj.message.stickerMessage.contextInfo;
         return buildReturn("sticker", {
-            caption: "", 
+            caption: "",
             fileName: downloadMedia?.success ? downloadMedia.fileName : "",
             mimetype: obj.message.stickerMessage.mimetype
         }, ctx?.stanzaId ? { jid: ctx.participant, id: ctx.stanzaId } : "");
@@ -154,54 +156,49 @@ async function convertMsg({ obj = {}, outgoing = false }) {
     return null;
 }
 
-// MEMORIA DE FUSIÓN: Funciones para mapear @lid a números reales
-function getRealJidFromLid(uid, lid) {
-    const mapPath = path.join(__dirname, `../conversations/${uid}_lids.json`);
-    if (fs.existsSync(mapPath)) {
-        const map = JSON.parse(fs.readFileSync(mapPath, 'utf8'));
-        return map[lid] || null;
-    }
-    return null;
+function lidMapPath(uid) {
+    return path.join(__dirname, `../conversations/${uid}_lids.json`);
 }
 
-function saveLidMapping(uid, lid, realJid) {
-    const mapPath = path.join(__dirname, `../conversations/${uid}_lids.json`);
-    let map = {};
-    if (fs.existsSync(mapPath)) {
-        map = JSON.parse(fs.readFileSync(mapPath, 'utf8'));
+function readLidMap(uid) {
+    try {
+        const mapPath = lidMapPath(uid);
+        if (fs.existsSync(mapPath)) {
+            return JSON.parse(fs.readFileSync(mapPath, 'utf8'));
+        }
+    } catch (e) {
+        console.error('Error leyendo mapa LID:', e.message);
     }
-    map[lid] = realJid;
-    fs.writeFileSync(mapPath, JSON.stringify(map, null, 2));
+    return {};
 }
 
 function getRealJidFromLid(uid, lid) {
-    const fs = require('fs');
-    const path = require('path');
-    const mapPath = path.join(__dirname, `../conversations/${uid}_lids.json`);
-    if (fs.existsSync(mapPath)) {
-        const map = JSON.parse(fs.readFileSync(mapPath, 'utf8'));
-        return map[lid] || null;
-    }
-    return null;
+    const map = readLidMap(uid);
+    return map[lid] || null;
 }
 
 function saveLidMapping(uid, lid, realJid) {
-    const fs = require('fs');
-    const path = require('path');
-    const mapPath = path.join(__dirname, `../conversations/${uid}_lids.json`);
-    let map = {};
-    if (fs.existsSync(mapPath)) {
-        map = JSON.parse(fs.readFileSync(mapPath, 'utf8'));
+    try {
+        const mapPath = lidMapPath(uid);
+        fs.mkdirSync(path.dirname(mapPath), { recursive: true });
+        const map = readLidMap(uid);
+        map[lid] = realJid;
+        fs.writeFileSync(mapPath, JSON.stringify(map, null, 2));
+    } catch (e) {
+        console.error('Error guardando mapa LID:', e.message);
     }
-    map[lid] = realJid;
-    fs.writeFileSync(mapPath, JSON.stringify(map, null, 2));
 }
 
 async function extractData(m, sessionId) {
     const { uid } = decodeObject(sessionId);
-    
+
     let rawRemoteJid = m?.key?.remoteJid || "";
     let remoteJid = removeNumberAfterColon(rawRemoteJid);
+
+    const altJid = m?.key?.remoteJidAlt;
+    if (remoteJid?.includes('@lid') && altJid && altJid.endsWith('@s.whatsapp.net')) {
+        saveLidMapping(uid, remoteJid, removeNumberAfterColon(altJid));
+    }
 
     const actualObj = await convertMsg({
         obj: m,
@@ -209,7 +206,7 @@ async function extractData(m, sessionId) {
     });
 
     if (actualObj) {
-        actualObj.remoteJid = remoteJid; 
+        actualObj.remoteJid = remoteJid;
     }
 
     if (remoteJid?.includes('@lid')) {
@@ -219,16 +216,16 @@ async function extractData(m, sessionId) {
             const log = await query(`SELECT send_to FROM broadcast_log WHERE msg_id = ?`, [actualObj.context.id]);
             if (log.length > 0) {
                 realJid = `${String(log[0].send_to).replace(/\D/g, '')}@s.whatsapp.net`;
-                saveLidMapping(uid, remoteJid, realJid); 
+                saveLidMapping(uid, remoteJid, realJid);
             }
         }
 
         if (!realJid && actualObj?.senderName) {
             const possibleChats = await query(`
-                SELECT sender_jid FROM chats 
+                SELECT sender_jid FROM chats
                 WHERE uid = ? AND instance_id = ? AND sender_name = ? AND sender_jid NOT LIKE '%@lid%'
             `, [uid, sessionId, actualObj.senderName]);
-            
+
             if (possibleChats.length === 1) {
                 realJid = possibleChats[0].sender_jid;
                 saveLidMapping(uid, remoteJid, realJid);
@@ -249,7 +246,7 @@ async function extractData(m, sessionId) {
         const last10 = num.slice(-10);
         const allChats = await query(`SELECT chat_id, sender_jid, sender_mobile FROM chats WHERE uid = ? AND instance_id = ?`, [uid, sessionId]);
         for (const c of allChats) {
-            if ((c.sender_jid && String(c.sender_jid).includes(last10)) || 
+            if ((c.sender_jid && String(c.sender_jid).includes(last10)) ||
                 (c.sender_mobile && String(c.sender_mobile).includes(last10))) {
                 chatId = c.chat_id;
                 break;
@@ -270,7 +267,7 @@ async function extractData(m, sessionId) {
         actualObj,
         userData: getUser[0],
         msgFromMe: m?.key?.fromMe,
-        remoteJid: remoteJid 
+        remoteJid: remoteJid
     };
 }
 
@@ -291,7 +288,7 @@ async function returnStateDelivery(obj, uid, sessionId) {
         const last10 = num.slice(-10);
         const allChats = await query(`SELECT chat_id, sender_jid, sender_mobile FROM chats WHERE uid = ? AND instance_id = ?`, [uid, sessionId]);
         for (const c of allChats) {
-            if ((c.sender_jid && String(c.sender_jid).includes(last10)) || 
+            if ((c.sender_jid && String(c.sender_jid).includes(last10)) ||
                 (c.sender_mobile && String(c.sender_mobile).includes(last10))) {
                 chatId = c.chat_id;
                 break;
@@ -341,7 +338,7 @@ async function updatingInMysql({ session, remoteJid, isGroup, chatId, actualObj,
             try {
                 const image = await fetchProfileUrl(session, remoteJid)
                 if (image) profile_image = image;
-            } catch(e){}
+            } catch (e) { }
 
             let groupData = "";
             let notRestrict = 1;
@@ -350,7 +347,7 @@ async function updatingInMysql({ session, remoteJid, isGroup, chatId, actualObj,
                 try {
                     groupData = await fetchGroupMeta(session, remoteJid)
                     if (groupData?.restrict) notRestrict = 0;
-                } catch(e){}
+                } catch (e) { }
             }
 
             await query(
@@ -379,7 +376,24 @@ async function updatingInMysql({ session, remoteJid, isGroup, chatId, actualObj,
             ]);
         }
     } catch (err) {
-        throw err; 
+        throw err;
+    }
+}
+
+// JID "canónico" del chat: el que está guardado en la tabla chats (sender_jid).
+// El frontend identifica cada chat por ese JID, así que todo evento en vivo
+// (push_new_msg) debe llevarlo en msg.remoteJid, sin importar si Meta lo mandó
+// como 52... o 521... o si el bot respondió con otra variante.
+async function getChatJid(uid, sessionId, chatId, fallback) {
+    try {
+        if (!chatId || typeof chatId !== 'string') return fallback;
+        const rows = await query(
+            `SELECT sender_jid FROM chats WHERE chat_id = ? AND uid = ? AND instance_id = ? LIMIT 1`,
+            [chatId, uid, sessionId]
+        );
+        return rows?.[0]?.sender_jid || fallback;
+    } catch (e) {
+        return fallback;
     }
 }
 
@@ -395,9 +409,12 @@ async function sendNewMsgSocket({
 
     const chats = await query(`SELECT * FROM chats WHERE uid = ? AND instance_id = ?`, [uid, sessionId])
 
+    const chatJid = await getChatJid(uid, sessionId, chatId, actualObj?.remoteJid);
+    const msgForUi = { ...actualObj, remoteJid: chatJid };
+
     io.to(getId[0]?.socket_id).emit('update_conversations', { chats: chats });
 
-    io.to(getId[0]?.socket_id).emit('push_new_msg', { msg: actualObj, chatId: chatId, sessionId: sessionId })
+    io.to(getId[0]?.socket_id).emit('push_new_msg', { msg: msgForUi, chatId: chatId, sessionId: sessionId })
 }
 
 async function webhookIncoming(m, sessionId, session) {
@@ -408,15 +425,15 @@ async function webhookIncoming(m, sessionId, session) {
             return;
         }
         if (global.processedMsgIds && global.processedMsgIds.has(state.actualObj.msgId)) {
-            return; 
+            return;
         }
 
         if (state.actualObj.type === "reaction") {
             await updateReaction({ uid: state.uid, chatId: state.chatId, reaction: state.actualObj.reaction, msgId: state.actualObj.msgId, actualObj: state.actualObj });
-            return; 
+            return;
         }
         if (state.actualObj.type === "update") {
-            return; 
+            return;
         }
 
         const chat = await query(`SELECT * FROM chats WHERE chat_id = ? AND uid = ? AND instance_id = ?`, [
@@ -456,63 +473,7 @@ async function updateDeliverySocket({ uid, chatId, obj }) {
     }
 }
 
-async function updateDelivery(obj, sessionId, pollMessage) {
-    await delay(2000)
-    if (pollMessage && pollMessage?.length > 0) {
-        const { uid } = decodeObject(sessionId)
-        await updatePool(pollMessage, uid, obj?.key?.id, obj?.update?.pollUpdates[0]?.pollUpdateMessageKey?.participant)
-    }
-
-    if (obj?.key?.fromMe) {
-        const { uid } = decodeObject(sessionId)
-        
-        let rawRemoteJid = obj?.key?.remoteJid || "";
-        if (rawRemoteJid.includes('@lid')) {
-            try {
-                const msgId = obj?.key?.id;
-                const log = await query(`SELECT send_to FROM broadcast_log WHERE msg_id = ?`, [msgId]);
-                if (log.length > 0) {
-                    const realJid = `${String(log[0].send_to).replace(/\D/g, '')}@s.whatsapp.net`;
-                    saveLidMapping(uid, rawRemoteJid, realJid);
-                }
-            } catch (e) {
-                console.error("Error atrapando LID en updateDelivery:", e);
-            }
-        }
-
-        const state = await returnStateDelivery(obj, uid, sessionId)
-
-        if (state.userData?.opened_chat_instance === sessionId) {
-            await updateDeliverySocket({
-                uid: uid,
-                chatId: state.chatId,
-                obj: obj,
-                sessionId: sessionId
-            })
-        }
-
-        const delivery_time = Date.now() / 1000
-        await query(`UPDATE broadcast_log SET delivery_status = ?, delivery_time = ? WHERE msg_id = ?`, [
-            obj?.update?.status === 4 ? "read" : "delivered",
-            delivery_time,
-            obj?.key?.id
-        ])
-
-        const filePath = `${__dirname}/../conversations/inbox/${uid}/${state.chatId}.json`
-
-        setTimeout(() => {
-            updateMessageObjectInFile(
-                filePath,
-                obj?.key?.id,
-                "status",
-                obj?.update?.status === 4 ? "read" : "delivered"
-            )
-        }, 1000);
-    }
-}
-
 function extractVoters(options) {
-    // Check if options is a valid array
     if (!Array.isArray(options)) {
         return [];
     }
@@ -520,7 +481,6 @@ function extractVoters(options) {
     let result = [];
 
     for (let option of options) {
-        // Check if each option is a valid object with the required properties
         if (typeof option !== 'object' || !option.hasOwnProperty('name') || !Array.isArray(option.voters)) {
             return [];
         }
@@ -565,12 +525,27 @@ async function updateDelivery(obj, sessionId, pollMessage) {
     await delay(2000)
     if (pollMessage && pollMessage?.length > 0) {
         const { uid } = decodeObject(sessionId)
-        await updatePool(pollMessage, uid, obj?.key?.id, obj?.update?.pollUpdates[0]?.pollUpdateMessageKey?.participant)
+        await updatePool(pollMessage, uid, obj?.key?.id, obj?.update?.pollUpdates?.[0]?.pollUpdateMessageKey?.participant)
     }
-
 
     if (obj?.key?.fromMe) {
         const { uid } = decodeObject(sessionId)
+
+        // Atrapa el LID usando el log de campañas
+        let rawRemoteJid = obj?.key?.remoteJid || "";
+        if (rawRemoteJid.includes('@lid')) {
+            try {
+                const msgId = obj?.key?.id;
+                const log = await query(`SELECT send_to FROM broadcast_log WHERE msg_id = ?`, [msgId]);
+                if (log.length > 0) {
+                    const realJid = `${String(log[0].send_to).replace(/\D/g, '')}@s.whatsapp.net`;
+                    saveLidMapping(uid, rawRemoteJid, realJid);
+                }
+            } catch (e) {
+                console.error("Error atrapando LID en updateDelivery:", e);
+            }
+        }
+
         const state = await returnStateDelivery(obj, uid, sessionId)
 
         if (state.userData?.opened_chat_instance === sessionId) {
@@ -584,12 +559,11 @@ async function updateDelivery(obj, sessionId, pollMessage) {
 
         const delivery_time = Date.now() / 1000
         await query(`UPDATE broadcast_log SET delivery_status = ?, delivery_time = ? WHERE msg_id = ?`, [
-            obj?.update?.status === 4 ? "read" : "delivered",
+            obj?.update?.status >= 4 ? "read" : "delivered",
             delivery_time,
             obj?.key?.id
         ])
 
-        // adding delivery update locally 
         const filePath = `${__dirname}/../conversations/inbox/${uid}/${state.chatId}.json`
 
         setTimeout(() => {
@@ -597,189 +571,193 @@ async function updateDelivery(obj, sessionId, pollMessage) {
                 filePath,
                 obj?.key?.id,
                 "status",
-                obj?.update?.status === 4 ? "read" : "delivered"
+                obj?.update?.status >= 4 ? "read" : "delivered"
             )
         }, 1000);
     }
 }
 
-// --------------------------  
+// ==========================================================
+// ENVÍO: helpers para verificar que Meta realmente aceptó el mensaje
+// ==========================================================
+
+// Pregunta a WhatsApp cuál es el JID real del número (resuelve 52 vs 521 sin adivinar).
+// Devuelve: string (jid válido) | null (el número NO existe en WhatsApp).
+// Si la consulta falla por red/timeout, devuelve el JID original para no bloquear el envío.
+async function resolveJid(session, jid) {
+    try {
+        if (!jid) return null;
+        // Grupos y LID se envían tal cual
+        if (jid.endsWith('@g.us') || jid.endsWith('@lid')) return jid;
+
+        const cleanJid = removeNumberAfterColon(jid);
+        const digits = cleanJid.replace(/@.*$/, '').replace(/\D/g, '');
+        if (!digits) return null;
+
+        // México: WhatsApp puede conocer el número como 52+10 dígitos o 521+10 dígitos
+        let candidates = [digits];
+        if (digits.startsWith('52') && (digits.length === 12 || digits.length === 13)) {
+            const last10 = digits.slice(-10);
+            candidates = [`52${last10}`, `521${last10}`];
+        }
+
+        const results = await session.onWhatsApp(...candidates);
+        const hit = Array.isArray(results) ? results.find(r => r?.exists) : null;
+
+        if (hit?.jid) return hit.jid;
+        if (Array.isArray(results) && results.length > 0) return null; // respondió y ninguno existe
+        return cleanJid; // respuesta vacía: no se puede concluir, se usa el original
+    } catch (e) {
+        console.warn('[resolveJid] onWhatsApp falló, se usa el JID original:', e?.message);
+        return removeNumberAfterColon(jid);
+    }
+}
+
+// Espera el ack del servidor (lo llena req.js en session.acks).
+// Devuelve { status, params } o null si no llegó a tiempo.
+async function waitForAck(session, msgId, ms = ACK_WAIT_MS) {
+    const t0 = Date.now();
+    while (Date.now() - t0 < ms) {
+        const a = session?.acks?.get(msgId);
+        if (a && (a.status === 0 || a.status >= 2)) return a;
+        await new Promise(r => setTimeout(r, 300));
+    }
+    return null;
+}
+
+function newMessageId(session) {
+    try {
+        const gen = generateMessageIDV2 || generateMessageID;
+        return gen(session?.user?.id);
+    } catch (e) {
+        return undefined;
+    }
+}
+
+// Función común de envío para texto / media / poll.
+async function deliver({ uid, toJid, content, saveObj, chatId, session, sessionId }) {
+    if (!session) {
+        return { success: false, msg: "Instance not found. Please try again" };
+    }
+
+    if (session?.ws && session.ws.isOpen === false) {
+        return { success: false, msg: "La sesión de WhatsApp no está conectada. Reconecta la instancia." };
+    }
+
+    const realJid = await resolveJid(session, toJid);
+    if (!realJid) {
+        return { success: false, msg: "El número no existe en WhatsApp (verifica el código de país y el número)." };
+    }
+    if (realJid !== toJid) {
+        console.log(`[deliver] JID resuelto: ${toJid} -> ${realJid}`);
+    }
+
+    const messageId = newMessageId(session);
+    if (messageId) {
+        global.processedMsgIds.add(messageId);
+        setTimeout(() => global.processedMsgIds.delete(messageId), 120000);
+    }
+
+    const msg = await session.sendMessage(realJid, content, messageId ? { messageId } : undefined);
+
+    if (!msg?.key?.id) {
+        return { success: false, msg: "Error desconocido de Meta al enviar." };
+    }
+
+    const msgId = msg.key.id;
+    global.processedMsgIds.add(msgId);
+    setTimeout(() => global.processedMsgIds.delete(msgId), 120000);
+
+    const ack = await waitForAck(session, msgId);
+
+    if (ack && ack.status === 0) {
+        const code = Array.isArray(ack.params) ? ack.params.join(' | ') : String(ack.params || '');
+        console.error(`[deliver] Meta RECHAZÓ el mensaje ${msgId} para ${realJid}: ${code}`);
+        global.processedMsgIds.delete(msgId);
+        return {
+            success: false,
+            msg: `WhatsApp rechazó el mensaje${code ? ` (${code})` : ''}. Si es 463, la cuenta está restringida temporalmente para escribir a contactos.`,
+            code
+        };
+    }
+
+    let warning = null;
+    if (!ack) {
+        warning = "Sin confirmación del servidor de WhatsApp (ack) dentro del tiempo esperado.";
+        console.warn(`[deliver] ${warning} msgId=${msgId} to=${realJid}`);
+    }
+
+    const unixTime = Number(msg?.messageTimestamp?.low ?? msg?.messageTimestamp) || Math.floor(Date.now() / 1000);
+    const finalSaveMsg = { ...saveObj, msgId, timestamp: unixTime };
+    const chatPath = `${__dirname}/../conversations/inbox/${uid}/${chatId}.json`;
+
+    addObjectToFile(finalSaveMsg, chatPath);
+
+    await query(`UPDATE chats SET last_message_came = ?, last_message = ?, is_opened = ? WHERE chat_id = ? AND instance_id = ?`,
+        [unixTime, JSON.stringify(finalSaveMsg), 1, chatId, sessionId]);
+
+    const [user] = await query(`SELECT * FROM user WHERE uid = ?`, [uid]);
+
+    if (user?.opened_chat_instance === sessionId) {
+        const io = getIOInstance();
+        const getId = await query(`SELECT * FROM rooms WHERE uid = ?`, [uid]);
+
+        await query(`UPDATE chats SET is_opened = ? WHERE chat_id = ?`, [1, chatId]);
+
+        const chats = await query(`SELECT * FROM chats WHERE uid = ? AND instance_id = ?`, [uid, sessionId]);
+
+        io.to(getId[0]?.socket_id).emit('update_conversations', { chats: chats, notificationOff: true });
+        const chatJid = await getChatJid(uid, sessionId, chatId, finalSaveMsg.remoteJid);
+        io.to(getId[0]?.socket_id).emit('push_new_msg', { msg: { ...finalSaveMsg, remoteJid: chatJid }, chatId: chatId, sessionId: sessionId });
+    }
+
+    return warning ? { success: true, warning, msgId } : { success: true, msgId };
+}
+
+// --------------------------
+// Funciones públicas de envío (misma firma que antes)
+// --------------------------
 
 function sendPollMsg({ uid, msgObj, toJid, saveObj, chatId, session, sessionId, sendObj }) {
     return new Promise(async (resolve) => {
         try {
-
-            if (!session) {
-                return resolve({
-                    success: false,
-                    msg: "Instance not found. Please try again"
-                })
-            }
-
-            const msg = await session.sendMessage(toJid, sendObj)
-
-            if (msg?.key?.id) {
-
-                const finalSaveMsg = { ...saveObj, msgId: msg?.key?.id, timestamp: msg?.messageTimestamp?.low, }
-
-                const chatPath = `${__dirname}/../conversations/inbox/${uid}/${chatId}.json`
-
-                addObjectToFile(finalSaveMsg, chatPath)
-
-                await query(`UPDATE chats SET last_message_came = ?, last_message = ?, is_opened = ? WHERE chat_id = ? AND instance_id = ?`,
-                    [
-                        msg?.messageTimestamp?.low,
-                        JSON.stringify(finalSaveMsg),
-                        1,
-                        chatId,
-                        sessionId
-                    ])
-
-                // updating socket 
-                const [user] = await query(`SELECT * FROM user WHERE uid = ?`, [
-                    uid
-                ])
-
-                if (user?.opened_chat_instance === sessionId) {
-                    const io = getIOInstance();
-
-                    const getId = await query(`SELECT * FROM rooms WHERE uid = ?`, [uid])
-
-                    await query(`UPDATE chats SET is_opened = ? WHERE chat_id = ?`, [1, chatId])
-
-                    const chats = await query(`SELECT * FROM chats WHERE uid = ? AND instance_id = ?`, [uid, sessionId])
-
-                    io.to(getId[0]?.socket_id).emit('update_conversations', { chats: chats, notificationOff: true });
-
-                    io.to(getId[0]?.socket_id).emit('push_new_msg', { msg: finalSaveMsg, chatId: chatId, sessionId: sessionId })
-                }
-
-                resolve({ success: true })
-
-            } else {
-                console.log(`error found in sendPollMsg`, msg)
-                resolve({
-                    msg: "Unknown error found could not send messsage. Please try to re add instance",
-                    err: msg?.toString()
-                })
-            }
-
+            const result = await deliver({
+                uid, toJid, content: sendObj || msgObj, saveObj, chatId, session, sessionId
+            });
+            resolve(result);
         } catch (err) {
-            resolve({ success: false, msg: err.toString(), err })
-            console.log(err)
-        }
-    })
-}
-
-function sendTextMsg({ uid, msgObj, toJid, saveObj, chatId, session, sessionId }) {
-    return new Promise(async (resolve) => {
-        try {
-            if (!session) {
-                return resolve({ success: false, msg: "Instance not found. Please try again" });
-            }
-            const msg = await session.sendMessage(toJid, msgObj);
-
-            if (msg?.key?.id) {
-                global.processedMsgIds.add(msg.key.id);
-                setTimeout(() => global.processedMsgIds.delete(msg.key.id), 60000);
-                const unixTime = msg?.messageTimestamp?.low || msg?.messageTimestamp || Math.floor(Date.now() / 1000);
-                
-                const finalSaveMsg = { ...saveObj, msgId: msg?.key?.id, timestamp: unixTime };
-                const chatPath = `${__dirname}/../conversations/inbox/${uid}/${chatId}.json`;
-
-                addObjectToFile(finalSaveMsg, chatPath);
-
-                await query(`UPDATE chats SET last_message_came = ?, last_message = ?, is_opened = ? WHERE chat_id = ? AND instance_id = ?`,
-                    [unixTime, JSON.stringify(finalSaveMsg), 1, chatId, sessionId]);
-
-                const [user] = await query(`SELECT * FROM user WHERE uid = ?`, [uid]);
-
-                if (user?.opened_chat_instance === sessionId) {
-                    const io = getIOInstance();
-                    const getId = await query(`SELECT * FROM rooms WHERE uid = ?`, [uid]);
-                    await query(`UPDATE chats SET is_opened = ? WHERE chat_id = ?`, [1, chatId]);
-                    const chats = await query(`SELECT * FROM chats WHERE uid = ? AND instance_id = ?`, [uid, sessionId]);
-
-                    io.to(getId[0]?.socket_id).emit('update_conversations', { chats: chats, notificationOff: true });
-                    io.to(getId[0]?.socket_id).emit('push_new_msg', { msg: finalSaveMsg, chatId: chatId, sessionId: sessionId });
-                }
-
-                resolve({ success: true });
-            } else {
-                resolve({ success: false, msg: "Error desconocido de Meta al enviar." });
-            }
-        } catch (err) {
+            console.log('error en sendPollMsg:', err);
             resolve({ success: false, msg: err.toString(), err });
         }
     });
 }
 
+function sendTextMsg({ uid, msgObj, toJid, saveObj, chatId, session, sessionId }) {
+    return new Promise(async (resolve) => {
+        try {
+            const result = await deliver({
+                uid, toJid, content: msgObj, saveObj, chatId, session, sessionId
+            });
+            resolve(result);
+        } catch (err) {
+            console.log('error en sendTextMsg:', err);
+            resolve({ success: false, msg: err.toString(), err });
+        }
+    });
+}
 
 function sendMedia({ uid, msgObj, toJid, saveObj, chatId, session, sessionId, sendObj }) {
     return new Promise(async (resolve) => {
         try {
-            if (!session) {
-                return resolve({
-                    success: false,
-                    msg: "Instance not found. Please try again"
-                })
-            }
-
-            const msg = await session.sendMessage(toJid, sendObj)
-
-            if (msg?.key?.id) {
-                global.processedMsgIds.add(msg.key.id);
-                setTimeout(() => global.processedMsgIds.delete(msg.key.id), 60000);
-
-                const finalSaveMsg = { ...saveObj, msgId: msg?.key?.id, timestamp: msg?.messageTimestamp?.low, }
-
-                const chatPath = `${__dirname}/../conversations/inbox/${uid}/${chatId}.json`
-
-                addObjectToFile(finalSaveMsg, chatPath)
-
-                await query(`UPDATE chats SET last_message_came = ?, last_message = ?, is_opened = ? WHERE chat_id = ? AND instance_id = ?`,
-                    [
-                        msg?.messageTimestamp?.low,
-                        JSON.stringify(finalSaveMsg),
-                        1,
-                        chatId,
-                        sessionId
-                    ])
-
-                // updating socket 
-                const [user] = await query(`SELECT * FROM user WHERE uid = ?`, [
-                    uid
-                ])
-
-                if (user?.opened_chat_instance === sessionId) {
-                    const io = getIOInstance();
-
-                    const getId = await query(`SELECT * FROM rooms WHERE uid = ?`, [uid])
-
-                    await query(`UPDATE chats SET is_opened = ? WHERE chat_id = ?`, [1, chatId])
-
-                    const chats = await query(`SELECT * FROM chats WHERE uid = ? AND instance_id = ?`, [uid, sessionId])
-
-                    io.to(getId[0]?.socket_id).emit('update_conversations', { chats: chats, notificationOff: true });
-
-                    io.to(getId[0]?.socket_id).emit('push_new_msg', { msg: finalSaveMsg, chatId: chatId, sessionId: sessionId })
-                }
-
-                resolve({ success: true })
-
-            } else {
-                console.log(`error found in sendChatTextMessage`, msg)
-                resolve({
-                    msg: "Unknown error found could not send messsage. Please try to re add instance",
-                    err: msg?.toString()
-                })
-            }
-
+            const result = await deliver({
+                uid, toJid, content: sendObj || msgObj, saveObj, chatId, session, sessionId
+            });
+            resolve(result);
         } catch (err) {
-            resolve({ success: false, msg: err.toString(), err })
-            console.log(err)
+            console.log('error en sendMedia:', err);
+            resolve({ success: false, msg: err.toString(), err });
         }
-    })
+    });
 }
 
 module.exports = {
