@@ -765,7 +765,22 @@ async function runChatbot(i, msg, uid, client_id, m, sessionId, session) {
     const nodes = readJsonFromFile(nodePath);
     const edges = readJsonFromFile(edgePath);
 
-    const chatUserKey = `${uid}_${msg?.remoteJid}`;
+    let cleanJid = removeNumberAfterColon(msg?.remoteJid || "");
+    if (cleanJid.includes('@lid')) {
+        const fs = require('fs');
+        const path = require('path');
+        const mapPath = path.join(__dirname, `../conversations/${uid}_lids.json`);
+        if (fs.existsSync(mapPath)) {
+            const map = JSON.parse(fs.readFileSync(mapPath, 'utf8'));
+            if (map[cleanJid]) {
+                cleanJid = map[cleanJid];
+            }
+        }
+    }
+    
+    msg.remoteJid = cleanJid;
+
+    const chatUserKey = `${uid}_${cleanJid}`; 
     let currentUserState = global.userStates.get(chatUserKey);
 
     if (currentUserState && currentUserState.length > 0) {
@@ -791,10 +806,10 @@ async function runChatbot(i, msg, uid, client_id, m, sessionId, session) {
             for (const k of answer) {
                 const chatId = encodeChatId({
                     ins: sessionId,
-                    grp: msg?.remoteJid?.endsWith("@g.us") ? true : false,
-                    num: msg?.remoteJid?.endsWith("@s.whatsapp.net") ?
-                        removeNumberAfterColon(msg?.remoteJid)?.replace("@s.whatsapp.net", "") :
-                        removeNumberAfterColon(msg?.remoteJid)?.replace("@g.us", "")
+                    grp: cleanJid.endsWith("@g.us") ? true : false,
+                    num: cleanJid.endsWith("@g.us") ?
+                        cleanJid.replace("@g.us", "") :
+                        cleanJid.replace("@s.whatsapp.net", "").replace("@lid", "")
                 });
 
                 const { msgObj, saveObj, sendObj } = await makeObjs(msg, k);
@@ -802,13 +817,13 @@ async function runChatbot(i, msg, uid, client_id, m, sessionId, session) {
                 if (saveObj?.type === "text" || saveObj?.type === "poll") {
                     await delay(1000);
                     const resp = await sendTextMsg({
-                        uid, msgObj, toJid: msg?.remoteJid, saveObj, chatId, session, sessionId
+                        uid, msgObj, toJid: cleanJid, saveObj, chatId, session, sessionId
                     });
                 } else {
                     if (saveObj?.type) {
                         await delay(1000);
                         const resp = await sendMedia({
-                            uid, msgObj, toJid: msg?.remoteJid, saveObj, chatId, session, sessionId, sendObj
+                            uid, msgObj, toJid: cleanJid, saveObj, chatId, session, sessionId, sendObj
                         });
                     }
                 }

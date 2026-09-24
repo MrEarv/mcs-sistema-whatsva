@@ -68,11 +68,9 @@ router.get("/get_my_chats", validateUser, checkPlanExpiry, async (req, res) => {
 
         let session = await getSession(selIns);
 
-        if (!session) {
-            return res.json({ success: false, msg: "Instance not found. Please re add the instance" });
-        }
-
-        const userData = session?.authState?.creds?.me || session.user;
+        const userData = session 
+            ? (session?.authState?.creds?.me || session.user) 
+            : { id: 'Desconectado', name: 'Sesión Inactiva' };
 
         const data = await query(`SELECT * FROM chats WHERE uid = ? AND instance_id = ? ORDER BY last_message_came DESC`, [
             req.decode.uid,

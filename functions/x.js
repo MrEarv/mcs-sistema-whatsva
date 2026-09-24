@@ -9,6 +9,11 @@ const { getSession } = require('../middlewares/req');
 const { fetchProfileUrl, fetchGroupMeta } = require('./control');
 const { decodeObject, updateMessageObjectInFile, addObjectToFile, encodeChatId, removeNumberAfterColon, saveImageToFile } = require('./function');
 
+if (!global.processedMsgIds) {
+    global.processedMsgIds = new Set();
+}
+
+
 function downloadMediaPromise(m, mimetype) {
     return new Promise(async (resolve) => {
         try {
@@ -169,30 +174,55 @@ function saveLidMapping(uid, lid, realJid) {
     fs.writeFileSync(mapPath, JSON.stringify(map, null, 2));
 }
 
+function getRealJidFromLid(uid, lid) {
+    const fs = require('fs');
+    const path = require('path');
+    const mapPath = path.join(__dirname, `../conversations/${uid}_lids.json`);
+    if (fs.existsSync(mapPath)) {
+        const map = JSON.parse(fs.readFileSync(mapPath, 'utf8'));
+        return map[lid] || null;
+    }
+    return null;
+}
+
+function saveLidMapping(uid, lid, realJid) {
+    const fs = require('fs');
+    const path = require('path');
+    const mapPath = path.join(__dirname, `../conversations/${uid}_lids.json`);
+    let map = {};
+    if (fs.existsSync(mapPath)) {
+        map = JSON.parse(fs.readFileSync(mapPath, 'utf8'));
+    }
+    map[lid] = realJid;
+    fs.writeFileSync(mapPath, JSON.stringify(map, null, 2));
+}
+
 async function extractData(m, sessionId) {
     const { uid } = decodeObject(sessionId);
-    let remoteJid = m?.key?.remoteJid;
+    
+    let rawRemoteJid = m?.key?.remoteJid || "";
+    let remoteJid = removeNumberAfterColon(rawRemoteJid);
 
     const actualObj = await convertMsg({
         obj: m,
         outgoing: m?.key?.fromMe ? true : false
     });
 
-    // FUSIÓN INTELIGENTE DE CHATS (@LID -> Número Real)
+    if (actualObj) {
+        actualObj.remoteJid = remoteJid; 
+    }
+
     if (remoteJid?.includes('@lid')) {
         let realJid = getRealJidFromLid(uid, remoteJid);
 
-        // Si no conocemos este alias, lo descubrimos usando el mensaje al que respondió
         if (!realJid && actualObj?.context?.id) {
             const log = await query(`SELECT send_to FROM broadcast_log WHERE msg_id = ?`, [actualObj.context.id]);
             if (log.length > 0) {
-                // Reconstruimos el número real y lo guardamos para el futuro
                 realJid = `${String(log[0].send_to).replace(/\D/g, '')}@s.whatsapp.net`;
                 saveLidMapping(uid, remoteJid, realJid); 
             }
         }
 
-        // Si logramos descubrir su identidad, unificamos el chat en tiempo real
         if (realJid) {
             remoteJid = realJid;
             if (actualObj) actualObj.remoteJid = realJid;
@@ -216,7 +246,32 @@ async function extractData(m, sessionId) {
         actualObj,
         userData: getUser[0],
         msgFromMe: m?.key?.fromMe,
-        remoteJid: remoteJid // Devolvemos el identificador unificado
+        remoteJid: remoteJid // Devolvemos el identificador unificado Y LIMPIO
+    };
+}
+
+async function returnStateDelivery(obj, uid, sessionId) {
+    let remoteJid = obj?.key?.remoteJid || "";
+    remoteJid = removeNumberAfterColon(remoteJid);
+
+    if (remoteJid.includes('@lid')) {
+        let realJid = getRealJidFromLid(uid, remoteJid);
+        if (realJid) remoteJid = realJid;
+    }
+
+    const chatId = encodeChatId({
+        ins: sessionId,
+        grp: remoteJid.endsWith("@g.us") ? true : false,
+        num: remoteJid.endsWith("@g.us") ?
+            remoteJid.replace("@g.us", "") :
+            remoteJid.replace("@s.whatsapp.net", "").replace("@lid", "")
+    });
+
+    const getUser = await query(`SELECT * FROM user WHERE uid = ?`, [uid]);
+
+    return {
+        chatId: chatId,
+        userData: getUser[0]
     };
 }
 
@@ -316,6 +371,9 @@ async function webhookIncoming(m, sessionId, session) {
         if (!state.uid || !state.actualObj) {
             return;
         }
+        if (global.processedMsgIds && global.processedMsgIds.has(state.actualObj.msgId)) {
+            return; 
+        }
 
         if (state.actualObj.type === "reaction") {
             await updateReaction({ uid: state.uid, chatId: state.chatId, reaction: state.actualObj.reaction, msgId: state.actualObj.msgId, actualObj: state.actualObj });
@@ -348,24 +406,7 @@ async function webhookIncoming(m, sessionId, session) {
     }
 }
 
-async function returnStateDelivery(obj, uid, sessionId) {
-    const chatId = encodeChatId({
-        ins: sessionId,
-        grp: obj?.key?.remoteJid?.endsWith("@g.us") ? true : false,
-        num: obj?.key?.remoteJid?.endsWith("@s.whatsapp.net") ?
-            removeNumberAfterColon(obj?.key?.remoteJid)?.replace("@s.whatsapp.net", "") :
-            removeNumberAfterColon(obj?.key?.remoteJid)?.replace("@g.us", "")
-    })
 
-    const getUser = await query(`SELECT * FROM user WHERE uid = ?`, [
-        uid
-    ])
-
-    return {
-        chatId: chatId,
-        userData: getUser[0]
-    }
-}
 
 async function updateDeliverySocket({ uid, chatId, obj }) {
     const io = getIOInstance()
@@ -542,66 +583,44 @@ function sendPollMsg({ uid, msgObj, toJid, saveObj, chatId, session, sessionId, 
 function sendTextMsg({ uid, msgObj, toJid, saveObj, chatId, session, sessionId }) {
     return new Promise(async (resolve) => {
         try {
-
             if (!session) {
-                return resolve({
-                    success: false,
-                    msg: "Instance not found. Please try again"
-                })
+                return resolve({ success: false, msg: "Instance not found. Please try again" });
             }
-            const msg = await session.sendMessage(toJid, msgObj)
+            const msg = await session.sendMessage(toJid, msgObj);
 
             if (msg?.key?.id) {
+                global.processedMsgIds.add(msg.key.id);
+                setTimeout(() => global.processedMsgIds.delete(msg.key.id), 60000);
+                const unixTime = msg?.messageTimestamp?.low || msg?.messageTimestamp || Math.floor(Date.now() / 1000);
+                
+                const finalSaveMsg = { ...saveObj, msgId: msg?.key?.id, timestamp: unixTime };
+                const chatPath = `${__dirname}/../conversations/inbox/${uid}/${chatId}.json`;
 
-                const finalSaveMsg = { ...saveObj, msgId: msg?.key?.id, timestamp: msg?.messageTimestamp?.low, }
-
-                const chatPath = `${__dirname}/../conversations/inbox/${uid}/${chatId}.json`
-
-                addObjectToFile(finalSaveMsg, chatPath)
+                addObjectToFile(finalSaveMsg, chatPath);
 
                 await query(`UPDATE chats SET last_message_came = ?, last_message = ?, is_opened = ? WHERE chat_id = ? AND instance_id = ?`,
-                    [
-                        msg?.messageTimestamp?.low,
-                        JSON.stringify(finalSaveMsg),
-                        1,
-                        chatId,
-                        sessionId
-                    ])
+                    [unixTime, JSON.stringify(finalSaveMsg), 1, chatId, sessionId]);
 
-                // updating socket 
-                const [user] = await query(`SELECT * FROM user WHERE uid = ?`, [
-                    uid
-                ])
+                const [user] = await query(`SELECT * FROM user WHERE uid = ?`, [uid]);
 
                 if (user?.opened_chat_instance === sessionId) {
                     const io = getIOInstance();
-
-                    const getId = await query(`SELECT * FROM rooms WHERE uid = ?`, [uid])
-
-                    await query(`UPDATE chats SET is_opened = ? WHERE chat_id = ?`, [1, chatId])
-
-                    const chats = await query(`SELECT * FROM chats WHERE uid = ? AND instance_id = ?`, [uid, sessionId])
+                    const getId = await query(`SELECT * FROM rooms WHERE uid = ?`, [uid]);
+                    await query(`UPDATE chats SET is_opened = ? WHERE chat_id = ?`, [1, chatId]);
+                    const chats = await query(`SELECT * FROM chats WHERE uid = ? AND instance_id = ?`, [uid, sessionId]);
 
                     io.to(getId[0]?.socket_id).emit('update_conversations', { chats: chats, notificationOff: true });
-
-                    io.to(getId[0]?.socket_id).emit('push_new_msg', { msg: finalSaveMsg, chatId: chatId, sessionId: sessionId })
+                    io.to(getId[0]?.socket_id).emit('push_new_msg', { msg: finalSaveMsg, chatId: chatId, sessionId: sessionId });
                 }
 
-                resolve({ success: true })
-
+                resolve({ success: true });
             } else {
-                console.log(`error found in sendChatTextMessage`, msg)
-                resolve({
-                    msg: "Unknown error found could not send messsage. Please try to re add instance",
-                    err: msg?.toString()
-                })
+                resolve({ success: false, msg: "Error desconocido de Meta al enviar." });
             }
-
         } catch (err) {
-            resolve({ success: false, msg: err.toString(), err })
-            console.log(err)
+            resolve({ success: false, msg: err.toString(), err });
         }
-    })
+    });
 }
 
 
@@ -618,6 +637,8 @@ function sendMedia({ uid, msgObj, toJid, saveObj, chatId, session, sessionId, se
             const msg = await session.sendMessage(toJid, sendObj)
 
             if (msg?.key?.id) {
+                global.processedMsgIds.add(msg.key.id);
+                setTimeout(() => global.processedMsgIds.delete(msg.key.id), 60000);
 
                 const finalSaveMsg = { ...saveObj, msgId: msg?.key?.id, timestamp: msg?.messageTimestamp?.low, }
 

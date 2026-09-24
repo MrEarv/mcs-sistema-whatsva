@@ -123,20 +123,26 @@ function saveImageToFile(imageBuffer, filePath, mimetype) {
 function addObjectToFile(object, filePath) {
     const parentDir = path.dirname(filePath);
 
-    // Check if the parent directory exists
     if (!fs.existsSync(parentDir)) {
-        // Create the parent directory if it doesn't exist
         fs.mkdirSync(parentDir, { recursive: true });
     }
 
+    let existingData = [];
+    
     if (fs.existsSync(filePath)) {
-        const existingData = JSON.parse(fs.readFileSync(filePath));
-        if (Array.isArray(existingData)) {
-            existingData.push(object);
-            fs.writeFileSync(filePath, JSON.stringify(existingData, null, 2));
-        } else {
-            console.error("File does not contain an array.");
+        try {
+            const fileContent = fs.readFileSync(filePath, 'utf8');
+            if (fileContent && fileContent.trim() !== '') {
+                existingData = JSON.parse(fileContent);
+            }
+        } catch (error) {
+            console.error(`[Escudo JSON] Archivo ocupado, recuperando...`, error.message);
         }
+    }
+
+    if (Array.isArray(existingData)) {
+        existingData.push(object);
+        fs.writeFileSync(filePath, JSON.stringify(existingData, null, 2));
     } else {
         fs.writeFileSync(filePath, JSON.stringify([object], null, 2));
     }
@@ -154,46 +160,30 @@ function removeNumberAfterColon(str) {
 }
 
 function updateMessageObjectInFile(filePath, msgId, key, value) {
-    // Check if the file path exists
+    // Si el archivo no existe, abortamos limpiamente
     if (!fs.existsSync(filePath)) {
-        console.error('File does not exist:', filePath);
         return;
     }
 
-    // Read JSON data from the file
-    fs.readFile(filePath, 'utf8', (err, data) => {
-        if (err) {
-            console.error('Error reading file:', err);
+    try {
+        // Leemos de forma 100% síncrona para no cruzarnos con addObjectToFile
+        const data = fs.readFileSync(filePath, 'utf8');
+        
+        // Si justo leímos en el milisegundo que el archivo estaba vacío, abortamos sin crashear
+        if (!data || data.trim() === '') {
             return;
         }
 
-        try {
-            // Parse JSON data
-            const dataArray = JSON.parse(data);
+        const dataArray = JSON.parse(data);
+        const message = dataArray.find(obj => obj.msgId === msgId);
 
-            // Find the message object with the given msgId
-            const message = dataArray.find(obj => obj.msgId === msgId);
-
-            // If the message is found, update the key with the new value
-            if (message) {
-                message[key] = value;
-                // console.log(`Updated message with msgId ${msgId}: ${key} set to ${value}`);
-
-                // Write the modified JSON data back to the file
-                fs.writeFile(filePath, JSON.stringify(dataArray, null, 2), 'utf8', (err) => {
-                    if (err) {
-                        console.error('Error writing file:', err);
-                        return;
-                    }
-                    // console.log('File updated successfully');
-                });
-            } else {
-                console.error(`Message with msgId ${msgId} not found`);
-            }
-        } catch (error) {
-            console.error('Error parsing JSON:', error);
+        if (message) {
+            message[key] = value;
+            fs.writeFileSync(filePath, JSON.stringify(dataArray, null, 2), 'utf8');
         }
-    });
+    } catch (error) {
+        // Ignoramos silenciosamente la colisión, el próximo evento lo actualizará
+    }
 }
 
 function readJSONFile(filePath, length) {
