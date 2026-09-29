@@ -864,8 +864,40 @@ async function chatbotInit(m, wa, sessionId, session, pollMessage) {
                 const chatbots = await query(`SELECT * FROM chatbot WHERE uid = ? AND active = ? AND instance_id = ?`, [uid, 1, sessionId]);
 
                 if (chatbots.length > 0) {
-                    await Promise.all(chatbots.map((i) => runChatbot(i, msg, uid, client_id, m, sessionId, session)));
-                }
+                        await Promise.all(chatbots.map(async (i) => {
+                            
+                            let shouldReply = true;
+                            const isForAll = i.for_all === 1 || i.for_all === '1' || i.for_all === true;
+
+                            if (!isForAll && i.prevent_book_id) {
+                                const msgKey = m?.messages?.[0]?.key || {};
+                                
+                                const rawJid = msgKey.remoteJidAlt || msgKey.remoteJid || msgKey.participant || "";
+                                
+                                const senderNumber = rawJid.split('@')[0].replace(/\D/g, '');
+                                const last10 = senderNumber.slice(-10);
+                                
+                                console.log(`[Chatbot Debug] Evaluando a ${last10}`);
+
+                                if (last10.length >= 10) {
+                                    const excluded = await query(
+                                        `SELECT id FROM contact WHERE uid = ? AND phonebook_id = ? AND mobile LIKE ?`, 
+                                        [uid, i.prevent_book_id, `%${last10}%`]
+                                    );
+                                    
+                                    if (excluded.length > 0) {
+                                        shouldReply = false;
+                                        console.log(`[Chatbot Debug] El número está en la agenda de exclusión.`);
+                                    } else {
+                                        console.log(`[Chatbot Debug] Permitiendo respuesta...`);
+                                    }
+                                }
+                            }
+                            if (shouldReply) {
+                                return runChatbot(i, msg, uid, client_id, m, sessionId, session);
+                            }
+                        }));
+                    }
 
             } else {
                 await query(`UPDATE chatbot SET active = ? WHERE uid = ?`, [0, uid])
