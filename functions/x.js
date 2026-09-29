@@ -188,7 +188,7 @@ function saveLidMapping(uid, lid, realJid) {
         console.error('Error guardando mapa LID:', e.message);
     }
 }
-
+// TODO: En el futuro se puede refactorizar la traducción del @lid usando msg.key.remoteJidAlt
 async function extractData(m, sessionId) {
     const { uid } = decodeObject(sessionId);
 
