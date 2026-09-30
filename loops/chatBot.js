@@ -1,11 +1,33 @@
-const { decodeObject, daysDiff, readJsonFromFile, encodeChatId, removeNumberAfterColon, getImageAsBase64, replaceVariables } = require("../functions/function")
+const { decodeObject, daysDiff, readJsonFromFile, encodeChatId, removeNumberAfterColon, getImageAsBase64, replaceVariables, readJSONFile } = require("../functions/function")
 const { query } = require('../database/dbpromise');
 const { sendMedia, sendTextMsg } = require("../functions/x");
 const { delay } = require("@whiskeysockets/baileys");
+const fetch = require('node-fetch');
 // Memoria global mejorada
 if (!global.userStates) {
     global.userStates = new Map();
 }
+
+// Funcion para consultar a Ollama
+async function generarRespuestaIA(mensajesEstructurados) {
+    try {
+        const response = await fetch("http://localhost:11434/api/chat", {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                model: "qwen2.5:3b",//"qwen2.5:0.5b",//llama3.2:1b",
+                messages: mensajesEstructurados, // Ya no es un string largo, es un arreglo JSON
+                stream: false
+            })
+        });
+        const data = await response.json();
+        return data.message.content; // La respuesta ahora viene en esta ruta
+    } catch (error) {
+        console.log("[Chatbot IA] Error de conexión con Ollama:", error);
+        return "Hubo un error al consultar la información, permíteme un momento."; 
+    }
+}
+
 function extractVoters(options) {
     // Check if options is a valid array
     if (!Array.isArray(options)) {
@@ -443,7 +465,17 @@ function getReply(nodes, edges, incomingWord, currentUserState) {
         const targetIds = edges.map(e => String(e.target));
         const rootIds = nodes.filter(n => !targetIds.includes(String(n.id))).map(n => String(n.id));
         
-        matchingEdges = matchingEdges.filter(edge => rootIds.includes(String(edge.source)));
+        let rootEdges = matchingEdges.filter(edge => rootIds.includes(String(edge.source)));
+        
+        if (rootEdges.length > 0) {
+            matchingEdges = rootEdges;
+        } else {
+            // Si no hay match directo y no hay historial, buscar el nodo "Para Todos"
+            matchingEdges = edges.filter(edge => {
+                const handle = String(edge.sourceHandle || "").trim().toLowerCase();
+                return handle === "{{other_msg}}" && rootIds.includes(String(edge.source));
+            });
+        }
     }
 
     const finalTargetIds = matchingEdges.map(edge => String(edge.target));
@@ -826,6 +858,58 @@ async function runChatbot(i, msg, uid, client_id, m, sessionId, session) {
 
                 const { msgObj, saveObj, sendObj } = await makeObjs(msg, k);
 
+               // --- INYECCIÓN DE INTELIGENCIA ARTIFICIAL ---
+                const isFallbackNode = edges.some(e => String(e.target) === String(k.id) && String(e.sourceHandle).toLowerCase() === "{{other_msg}}");
+
+                if (isFallbackNode && saveObj?.type === "text") {
+                    console.log(`[Chatbot IA] Mensaje fuera de guion detectado. Consultando a Ollama...`);
+                    await session.sendPresenceUpdate('composing', cleanJid);
+
+                    const chatPath = `${__dirname}/../conversations/inbox/${uid}/${chatId}.json`;
+                    const historialRaw = readJSONFile(chatPath, 4); 
+                    /// --- Prueba de contexto para la IA ---
+                    const contextoEmpresa = `Eres Earvin Arizmendi, estudiante de sistemas en México. Hablas de forma casual por WhatsApp.
+    
+REGLAS DE COMPORTAMIENTO:
+1. Usa español mexicano relajado (ej. qué onda, jalas, simón, jajaja).
+2. NUNCA repitas la pregunta que te hacen. Responde directo, como una persona real.
+3. Tus respuestas deben ser MUY cortas (máximo 30 palabras).
+4. Eres un buen amigo. Si te piden un favor o ayuda, responde con naturalidad, por ejemplo: "Claro, dime, ¿qué ocupas?" o "A ver, suelta el chisme".
+5. Juegas Brawl Stars y Minecraft, pero solo en la mañana o después de las 5 PM.
+6. Sabes de todo, tienes miles de ideas y conocimientos.
+7. Si no sabes algo, responde con humor o cambia de tema. No digas "no sé".
+8. Evita saludos formales y despedidas largas. Sé casual y directo.
+9. Usa emojis de forma moderada, solo para enfatizar emociones.
+10. Mantén un tono amistoso y relajado, como un amigo cercano.`;
+
+                    let mensajesChat = [{ role: "system", content: contextoEmpresa }];
+                    
+                    historialRaw.forEach(h => {
+                        const pastText = h.msgContext?.text || (h.msgContext?.stickerMessage ? "[Envió un sticker]" : (h.msgContext?.imageMessage ? "[Envió una imagen]" : ""));
+                        if (pastText) {
+                            mensajesChat.push({ role: h.route === 'incoming' ? 'user' : 'assistant', content: pastText });
+                        }
+                    });
+                    
+                    let textoActual = msg?.text;
+                    if (!textoActual) {
+                        if (msg?.message?.stickerMessage) textoActual = "[El usuario envió un sticker, reacciona a él]";
+                        else if (msg?.message?.imageMessage) textoActual = "[El usuario envió una foto]";
+                        else textoActual = "[Archivo multimedia adjunto]";
+                    }
+
+                    mensajesChat.push({ role: "user", content: textoActual });
+
+                    const respuestaIA = await generarRespuestaIA(mensajesChat);
+                    
+                    msgObj.text = respuestaIA;
+                    saveObj.msgContext.text = respuestaIA;
+                    
+                    await session.sendPresenceUpdate('paused', cleanJid);
+                }
+                // --- FIN INYECCIÓN IA ---
+
+
                 if (saveObj?.type === "text" || saveObj?.type === "poll") {
                     await delay(1000);
                     await sendTextMsg({
@@ -838,6 +922,9 @@ async function runChatbot(i, msg, uid, client_id, m, sessionId, session) {
                             uid, msgObj, toJid: cleanJid, saveObj, chatId, session, sessionId, sendObj
                         });
                     }
+                }
+                if (isFallbackNode) {
+                    break; // Obliga al sistema a procesar solo una respuesta de la IA por mensaje
                 }
             }
         }
