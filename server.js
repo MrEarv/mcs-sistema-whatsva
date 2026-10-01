@@ -1,4 +1,17 @@
 require('dotenv').config();
+
+// --------------------
+// Blindaje contra caídas por errores de red no atrapados
+// (ej. fallas de DNS al descargar media de WhatsApp, como ENOTFOUND)
+// Sin esto, Node mata todo el proceso y se pierden mensajes a medio procesar.
+// --------------------
+process.on('unhandledRejection', (reason) => {
+    console.error('[unhandledRejection] No se dejó caer el servidor:', reason);
+});
+process.on('uncaughtException', (err) => {
+    console.error('[uncaughtException] No se dejó caer el servidor:', err);
+});
+
 const express = require('express');
 const app = express();
 const cors = require('cors');
