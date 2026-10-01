@@ -15,7 +15,7 @@ async function generarRespuestaIA(mensajesEstructurados) {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                model: "qwen2.5:3b",//"qwen2.5:0.5b",//llama3.2:1b",
+                model: "gemma2:2b",//           qwen2.5:3b    qwen2.5:0.5b   llama3.2:1b
                 messages: mensajesEstructurados, // Ya no es un string largo, es un arreglo JSON
                 stream: false
             })
@@ -438,48 +438,75 @@ async function convertMsg({ obj = {}, outgoing = false, pollMessage = "" }) {
     }
 }
 // funcion findtargetNodes fusionada con getreply
+// Devuelve { nodes, isFallback }:
+// - isFallback = false  -> el usuario dio una respuesta válida del guion (palabra raíz u opción de menú).
+// - isFallback = true   -> el usuario se salió del guion (no hay nodo raíz que matchee, o contestó
+//                          algo que no es una opción válida del menú actual). En este caso `nodes`
+//                          puede venir vacío si no hay una salida {{OTHER_MSG}} dibujada en el flujo;
+//                          el llamador decide qué hacer (normalmente: responder con la IA de todas formas).
 function getReply(nodes, edges, incomingWord, currentUserState) {
     const safeWord = String(incomingWord || "").trim().toLowerCase();
-    
+
     let matchingEdges = edges.filter(edge => {
         const handle = String(edge.sourceHandle || "").trim().toLowerCase();
         return handle === safeWord;
     });
 
-    if (currentUserState && currentUserState.length > 0) {
-        const contextualEdges = matchingEdges.filter(edge => currentUserState.includes(String(edge.source)));
-        if (contextualEdges.length > 0) {
-            matchingEdges = contextualEdges;
-        } else {
-            const otherEdges = edges.filter(edge => {
-                const handle = String(edge.sourceHandle || "").trim().toLowerCase();
-                return handle === "{{other_msg}}" && currentUserState.includes(String(edge.source));
-            });
-            if (otherEdges.length > 0) {
-                matchingEdges = otherEdges;
-            } else {
-                return []; 
-            }
-        }
-    } else {
-        const targetIds = edges.map(e => String(e.target));
-        const rootIds = nodes.filter(n => !targetIds.includes(String(n.id))).map(n => String(n.id));
-        
-        let rootEdges = matchingEdges.filter(edge => rootIds.includes(String(edge.source)));
-        
-        if (rootEdges.length > 0) {
-            matchingEdges = rootEdges;
-        } else {
-            // Si no hay match directo y no hay historial, buscar el nodo "Para Todos"
-            matchingEdges = edges.filter(edge => {
-                const handle = String(edge.sourceHandle || "").trim().toLowerCase();
-                return handle === "{{other_msg}}" && rootIds.includes(String(edge.source));
-            });
-        }
+    const targetIds = edges.map(e => String(e.target));
+    const rootIds = nodes.filter(n => !targetIds.includes(String(n.id))).map(n => String(n.id));
+
+    // 1. PRIORIDAD MÁXIMA: Palabras clave de inicio globales (ej. "Hola", "Menu")
+    // Si el usuario escribe una palabra raíz, lo saca de cualquier trampa y resetea el flujo.
+    // Esto SIEMPRE es una respuesta de guion válida: nunca pasa por la IA.
+    let rootEdges = matchingEdges.filter(edge => rootIds.includes(String(edge.source)));
+    if (rootEdges.length > 0) {
+        const finalTargetIds = rootEdges.map(edge => String(edge.target));
+        return {
+            nodes: nodes.filter(node => finalTargetIds.includes(String(node.id))),
+            isFallback: false
+        };
     }
 
-    const finalTargetIds = matchingEdges.map(edge => String(edge.target));
-    return nodes.filter(node => finalTargetIds.includes(String(node.id)));
+    // 2. BÚSQUEDA CONTEXTUAL (Si está atorado en una encuesta o menú)
+    if (currentUserState && currentUserState.length > 0) {
+        // A) Busca si la respuesta es una opción válida (ej. "1" o "2") -> guion válido, NO es IA.
+        const contextualEdges = matchingEdges.filter(edge => currentUserState.includes(String(edge.source)));
+
+        if (contextualEdges.length > 0) {
+            const finalTargetIds = contextualEdges.map(edge => String(edge.target));
+            return {
+                nodes: nodes.filter(node => finalTargetIds.includes(String(node.id))),
+                isFallback: false
+            };
+        }
+
+        // B) Se equivocó: si hay una salida {{OTHER_MSG}} local dibujada para ESE menú, se usa ese nodo.
+        //    De cualquier forma, es un caso "fuera de guion" -> isFallback = true.
+        const localFallback = edges.filter(edge => {
+            const handle = String(edge.sourceHandle || "").trim().toLowerCase();
+            return handle === "{{other_msg}}" && currentUserState.includes(String(edge.source));
+        });
+
+        const finalTargetIds = localFallback.map(edge => String(edge.target));
+        return {
+            nodes: nodes.filter(node => finalTargetIds.includes(String(node.id))),
+            isFallback: true
+        };
+    }
+
+    // 3. SIN ESTADO ACTUAL: no hay menú pendiente y la palabra no coincidió con ningún nodo raíz.
+    // Si existe una salida {{OTHER_MSG}} global dibujada en el flujo, se usa ese nodo; si no, igual
+    // es fuera de guion -> isFallback = true (el llamador puede responder con la IA sin nodo).
+    const globalFallback = edges.filter(edge => {
+        const handle = String(edge.sourceHandle || "").trim().toLowerCase();
+        return handle === "{{other_msg}}" && rootIds.includes(String(edge.source));
+    });
+
+    const finalTargetIds = globalFallback.map(edge => String(edge.target));
+    return {
+        nodes: nodes.filter(node => finalTargetIds.includes(String(node.id))),
+        isFallback: true
+    };
 }
 
 async function checkPlan(uid) {
@@ -787,6 +814,119 @@ async function makeObjs(msg, k) {
     }
 }
 
+// Arma el prompt de sistema + el historial reciente en el formato que espera
+// la API de chat de Ollama. Contexto/reglas de prueba, sin variables externas.
+function buildMensajesIA(uid, chatId, msg) {
+    const contextoEmpresa = `Eres Earvin Arizmendi, estudiante de sistemas en México. Hablas de forma casual.
+        REGLAS DE COMPORTAMIENTO:
+        1. Usa español mexicano relajado (ej. qué onda, jalas, simón, jajaja).
+        2. FORMATO ESTRICTO: Interfaz de terminal SMS antigua. Utiliza EXCLUSIVAMENTE el alfabeto latino (A-Z, a-z), números y signos de puntuación básicos. Cero gráficos.
+        3. Tus respuestas deben ser MUY cortas (máximo 15 palabras).
+        4. Eres un compa platicando. Responde directo y nunca ofrezcas ayuda.
+        5. Juegas Brawl Stars y Minecraft solo en la mañana o después de las 5 PM.`;
+
+    let mensajesChat = [{ role: "system", content: contextoEmpresa }];
+
+    const chatPath = `${__dirname}/../conversations/inbox/${uid}/${chatId}.json`;
+    const historialRaw = readJSONFile(chatPath, 8);
+
+    historialRaw.forEach(h => {
+        let pastText = h.msgContext?.text || h.text || h.body || h.message || "";
+
+        if (!pastText && h.msgContext?.pollCreationMessage) {
+            pastText = h.msgContext.pollCreationMessage.name;
+        }
+
+        if (!pastText) {
+            if (h.msgContext?.stickerMessage) pastText = "[Sticker]";
+            else if (h.msgContext?.imageMessage) pastText = "[Imagen]";
+        }
+
+        if (pastText && typeof pastText === 'string') {
+            mensajesChat.push({
+                role: h.route === 'incoming' ? 'user' : 'assistant',
+                content: pastText
+            });
+        }
+    });
+
+    let textoActual = msg?.text;
+    if (!textoActual) {
+        if (msg?.message?.stickerMessage) textoActual = "[Sticker]";
+        else if (msg?.message?.imageMessage) textoActual = "[Foto]";
+        else textoActual = "[Multimedia]";
+    }
+    mensajesChat.push({ role: "user", content: textoActual });
+
+    return mensajesChat;
+}
+
+// Resuelve el chat_id de MySQL para un JID limpio, igual que en extractData/x.js:
+// compara por los últimos 10 dígitos para unificar variantes del mismo número.
+async function resolveChatId(uid, sessionId, cleanJid) {
+    const isGroup = cleanJid.endsWith("@g.us");
+    const num = isGroup ? cleanJid.replace("@g.us", "") : cleanJid.replace("@s.whatsapp.net", "").replace("@lid", "");
+    let chatId = null;
+
+    if (!isGroup && num.length >= 10) {
+        const last10 = num.slice(-10);
+        const allChats = await query(`SELECT chat_id, sender_jid, sender_mobile FROM chats WHERE uid = ? AND instance_id = ?`, [uid, sessionId]);
+        for (const c of allChats) {
+            if ((c.sender_jid && String(c.sender_jid).includes(last10)) ||
+                (c.sender_mobile && String(c.sender_mobile).includes(last10))) {
+                chatId = c.chat_id;
+                break;
+            }
+        }
+    }
+
+    if (!chatId) {
+        chatId = encodeChatId({ ins: sessionId, grp: isGroup, num: num });
+    }
+
+    return chatId;
+}
+
+// Consulta a Ollama y envía la respuesta como un mensaje de texto normal.
+// Se usa tanto cuando el mensaje no cae en ningún nodo raíz del flujo, como
+// cuando el usuario está dentro de un flujo y responde algo fuera de las
+// opciones válidas de ese menú.
+async function responderConIA({ uid, cleanJid, chatId, msg, session, sessionId }) {
+    console.log(`[Chatbot IA] Mensaje fuera de guion detectado. Consultando a Ollama...`);
+
+    await session.sendPresenceUpdate('composing', cleanJid);
+
+    const mensajesChat = buildMensajesIA(uid, chatId, msg);
+
+    // Imprimir en consola la memoria exacta que va a leer la IA (para depurar)
+    console.log("[Chatbot IA] Memoria ensamblada:", mensajesChat);
+
+    const respuestaIA = await generarRespuestaIA(mensajesChat);
+
+    await session.sendPresenceUpdate('paused', cleanJid);
+
+    const msgObj = { text: respuestaIA };
+    const saveObj = {
+        "group": false,
+        "type": "text",
+        "msgId": "",
+        "remoteJid": cleanJid,
+        "msgContext": msgObj,
+        "reaction": "",
+        "timestamp": "",
+        "senderName": msg?.senderName,
+        "status": "sent",
+        "star": false,
+        "route": "outgoing",
+        "context": ""
+    };
+
+    await delay(1000);
+    await sendTextMsg({
+        uid, msgObj, toJid: cleanJid, saveObj, chatId, session, sessionId
+    });
+}
+
 async function runChatbot(i, msg, uid, client_id, m, sessionId, session) {
     const chatbot = i;
     const flow = JSON.parse(chatbot?.flow);
@@ -809,125 +949,64 @@ async function runChatbot(i, msg, uid, client_id, m, sessionId, session) {
             }
         }
     }
-    
+
     msg.remoteJid = cleanJid;
 
-    const chatUserKey = `${uid}_${cleanJid}`; 
+    const chatUserKey = `${uid}_${cleanJid}`;
     let currentUserState = global.userStates.get(chatUserKey);
 
     if (currentUserState && currentUserState.length > 0) {
         const isValidState = currentUserState.some(stateId => nodes.some(node => String(node.id) === stateId));
         if (!isValidState) {
             global.userStates.delete(chatUserKey);
-            currentUserState = null; 
+            currentUserState = null;
         }
     }
 
+    // chat_id se resuelve una sola vez: lo usan tanto el envío de guion como la IA.
+    const chatId = await resolveChatId(uid, sessionId, cleanJid);
+
+    let answer = [];
+    let isFallback = true;
+
     if (nodes.length > 0 && edges.length > 0) {
-        const answer = getReply(nodes, edges, msg?.text, currentUserState);
-        
-        if (answer.length > 0) {
-            const hasNextSteps = edges.some(edge => answer.some(node => String(node.id) === String(edge.source)));
-            
-            if (hasNextSteps) {
-                global.userStates.set(chatUserKey, answer.map(node => String(node.id)));
-            } else {
-                global.userStates.delete(chatUserKey);
-            }
+        const result = getReply(nodes, edges, msg?.text, currentUserState);
+        answer = result.nodes;
+        isFallback = result.isFallback;
+    }
+    // Si no hay flujo configurado (nodes/edges vacíos), isFallback se queda en true:
+    // se trata igual que "fuera de guion" y responde la IA directamente.
 
-            for (const k of answer) {
-                let isGroup = cleanJid.endsWith("@g.us");
-                let num = isGroup ? cleanJid.replace("@g.us", "") : cleanJid.replace("@s.whatsapp.net", "").replace("@lid", "");
-                let chatId = null;
+    if (!isFallback) {
+        // Respuesta de guion válida (palabra raíz o una opción de menú): NUNCA pasa por la IA.
+        const hasNextSteps = edges.some(edge => answer.some(node => String(node.id) === String(edge.source)));
 
-                if (!isGroup && num.length >= 10) {
-                    const last10 = num.slice(-10);
-                    const allChats = await query(`SELECT chat_id, sender_jid, sender_mobile FROM chats WHERE uid = ? AND instance_id = ?`, [uid, sessionId]);
-                    for (const c of allChats) {
-                        if ((c.sender_jid && String(c.sender_jid).includes(last10)) || 
-                            (c.sender_mobile && String(c.sender_mobile).includes(last10))) {
-                            chatId = c.chat_id;
-                            break;
-                        }
-                    }
-                }
+        if (hasNextSteps) {
+            global.userStates.set(chatUserKey, answer.map(node => String(node.id)));
+        } else {
+            global.userStates.delete(chatUserKey);
+        }
 
-                if (!chatId) {
-                    chatId = encodeChatId({ ins: sessionId, grp: isGroup, num: num });
-                }
+        for (const k of answer) {
+            const { msgObj, saveObj, sendObj } = await makeObjs(msg, k);
 
-                const { msgObj, saveObj, sendObj } = await makeObjs(msg, k);
-
-               // --- INYECCIÓN DE INTELIGENCIA ARTIFICIAL ---
-                const isFallbackNode = edges.some(e => String(e.target) === String(k.id) && String(e.sourceHandle).toLowerCase() === "{{other_msg}}");
-
-                if (isFallbackNode && saveObj?.type === "text") {
-                    console.log(`[Chatbot IA] Mensaje fuera de guion detectado. Consultando a Ollama...`);
-                    await session.sendPresenceUpdate('composing', cleanJid);
-
-                    const chatPath = `${__dirname}/../conversations/inbox/${uid}/${chatId}.json`;
-                    const historialRaw = readJSONFile(chatPath, 4); 
-                    /// --- Prueba de contexto para la IA ---
-                    const contextoEmpresa = `Eres Earvin Arizmendi, estudiante de sistemas en México. Hablas de forma casual por WhatsApp.
-    
-REGLAS DE COMPORTAMIENTO:
-1. Usa español mexicano relajado (ej. qué onda, jalas, simón, jajaja).
-2. NUNCA repitas la pregunta que te hacen. Responde directo, como una persona real.
-3. Tus respuestas deben ser MUY cortas (máximo 30 palabras).
-4. Eres un buen amigo. Si te piden un favor o ayuda, responde con naturalidad, por ejemplo: "Claro, dime, ¿qué ocupas?" o "A ver, suelta el chisme".
-5. Juegas Brawl Stars y Minecraft, pero solo en la mañana o después de las 5 PM.
-6. Sabes de todo, tienes miles de ideas y conocimientos.
-7. Si no sabes algo, responde con humor o cambia de tema. No digas "no sé".
-8. Evita saludos formales y despedidas largas. Sé casual y directo.
-9. Usa emojis de forma moderada, solo para enfatizar emociones.
-10. Mantén un tono amistoso y relajado, como un amigo cercano.`;
-
-                    let mensajesChat = [{ role: "system", content: contextoEmpresa }];
-                    
-                    historialRaw.forEach(h => {
-                        const pastText = h.msgContext?.text || (h.msgContext?.stickerMessage ? "[Envió un sticker]" : (h.msgContext?.imageMessage ? "[Envió una imagen]" : ""));
-                        if (pastText) {
-                            mensajesChat.push({ role: h.route === 'incoming' ? 'user' : 'assistant', content: pastText });
-                        }
-                    });
-                    
-                    let textoActual = msg?.text;
-                    if (!textoActual) {
-                        if (msg?.message?.stickerMessage) textoActual = "[El usuario envió un sticker, reacciona a él]";
-                        else if (msg?.message?.imageMessage) textoActual = "[El usuario envió una foto]";
-                        else textoActual = "[Archivo multimedia adjunto]";
-                    }
-
-                    mensajesChat.push({ role: "user", content: textoActual });
-
-                    const respuestaIA = await generarRespuestaIA(mensajesChat);
-                    
-                    msgObj.text = respuestaIA;
-                    saveObj.msgContext.text = respuestaIA;
-                    
-                    await session.sendPresenceUpdate('paused', cleanJid);
-                }
-                // --- FIN INYECCIÓN IA ---
-
-
-                if (saveObj?.type === "text" || saveObj?.type === "poll") {
-                    await delay(1000);
-                    await sendTextMsg({
-                        uid, msgObj, toJid: cleanJid, saveObj, chatId, session, sessionId
-                    });
-                } else {
-                    if (saveObj?.type) {
-                        await delay(1000);
-                        await sendMedia({
-                            uid, msgObj, toJid: cleanJid, saveObj, chatId, session, sessionId, sendObj
-                        });
-                    }
-                }
-                if (isFallbackNode) {
-                    break; // Obliga al sistema a procesar solo una respuesta de la IA por mensaje
-                }
+            if (saveObj?.type === "text" || saveObj?.type === "poll") {
+                await delay(1000);
+                await sendTextMsg({
+                    uid, msgObj, toJid: cleanJid, saveObj, chatId, session, sessionId
+                });
+            } else if (saveObj?.type) {
+                await delay(1000);
+                await sendMedia({
+                    uid, msgObj, toJid: cleanJid, saveObj, chatId, session, sessionId, sendObj
+                });
             }
         }
+    } else {
+        // Fuera de guion: ya sea que el flujo tenga un nodo {{OTHER_MSG}} dibujado o no,
+        // responde la IA. El estado del menú pendiente (si había uno) se deja intacto,
+        // para que el usuario pueda seguir contestando la opción válida después.
+        await responderConIA({ uid, cleanJid, chatId, msg, session, sessionId });
     }
 }
 
