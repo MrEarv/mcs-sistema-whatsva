@@ -18,7 +18,7 @@ const extractPayload = (req) => req.body?.data?.payload || req.body?.data || req
 router.post('/add_bot', validateUser, checkPlanExpiry, checkChatbotPlan, async (req, res) => {
     try {
         const payload = extractPayload(req);
-        const { title, for_all, prevent_book_id, flow, instance_id } = payload;
+        const { title, for_all, prevent_book_id, flow, instance_id, ai_prompt } = payload;
 
         if (!title || !flow || !instance_id) {
             return res.json({ success: false, msg: "Please select the required fields" })
@@ -30,7 +30,6 @@ router.post('/add_bot', validateUser, checkPlanExpiry, checkChatbotPlan, async (
             }
         }
 
-        // Revisamos si ya existe un bot encendido en esta instancia
         const getBot = await query(`SELECT * FROM chatbot WHERE uid = ? AND instance_id = ? AND active = 1`, [
             req.decode.uid,
             instance_id
@@ -38,14 +37,15 @@ router.post('/add_bot', validateUser, checkPlanExpiry, checkChatbotPlan, async (
 
         const isBotActive = getBot.length > 0 ? 0 : 1;
 
-        await query(`INSERT INTO chatbot (uid, title, for_all, prevent_book_id, flow, active, instance_id) VALUES (?,?,?,?,?,?,?)`, [
+        await query(`INSERT INTO chatbot (uid, title, for_all, prevent_book_id, flow, active, instance_id, ai_prompt) VALUES (?,?,?,?,?,?,?,?)`, [
             req.decode.uid,
             title,
             for_all ? 1 : 0,
             prevent_book_id,
             JSON.stringify(flow),
             isBotActive, 
-            instance_id
+            instance_id,
+            ai_prompt || null
         ])
 
         res.json({ success: true, msg: "Chatbot was added" })
@@ -60,7 +60,7 @@ router.post('/add_bot', validateUser, checkPlanExpiry, checkChatbotPlan, async (
 router.post('/update_bot', validateUser, checkPlanExpiry, checkChatbotPlan, async (req, res) => {
     try {
         const payload = extractPayload(req);
-        const { title, for_all, prevent_book_id, flow, instance_id, id } = payload;
+        const { title, for_all, prevent_book_id, flow, instance_id, id, ai_prompt } = payload;
 
         if (!title || !flow || !instance_id) {
             return res.json({ success: false, msg: "Please select the required fields" })
@@ -72,12 +72,13 @@ router.post('/update_bot', validateUser, checkPlanExpiry, checkChatbotPlan, asyn
             }
         }
 
-      await query(`UPDATE chatbot SET title = ?, for_all = ?, prevent_book_id = ?, flow = ?, instance_id = ? WHERE id = ? AND uid = ?`, [
+      await query(`UPDATE chatbot SET title = ?, for_all = ?, prevent_book_id = ?, flow = ?, instance_id = ?, ai_prompt = ? WHERE id = ? AND uid = ?`, [
             title,
             for_all ? 1 : 0,
             prevent_book_id,
             JSON.stringify(flow),
             instance_id,
+            ai_prompt || null,
             id,
             req.decode.uid
         ])

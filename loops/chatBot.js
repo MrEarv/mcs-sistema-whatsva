@@ -15,9 +15,13 @@ async function generarRespuestaIA(mensajesEstructurados) {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                model: "gemma2:2b",//           qwen2.5:3b    qwen2.5:0.5b   llama3.2:1b
+                model: "qwen2.5:3b",//        gemma2:2b           qwen2.5:3b    qwen2.5:0.5b   llama3.2:1b
                 messages: mensajesEstructurados, // Ya no es un string largo, es un arreglo JSON
-                stream: false
+                stream: false,
+                options: {
+                    //num_predict: 100,   
+                    temperature: 0.8   
+                }
             })
         });
         const data = await response.json();
@@ -438,12 +442,6 @@ async function convertMsg({ obj = {}, outgoing = false, pollMessage = "" }) {
     }
 }
 // funcion findtargetNodes fusionada con getreply
-// Devuelve { nodes, isFallback }:
-// - isFallback = false  -> el usuario dio una respuesta válida del guion (palabra raíz u opción de menú).
-// - isFallback = true   -> el usuario se salió del guion (no hay nodo raíz que matchee, o contestó
-//                          algo que no es una opción válida del menú actual). En este caso `nodes`
-//                          puede venir vacío si no hay una salida {{OTHER_MSG}} dibujada en el flujo;
-//                          el llamador decide qué hacer (normalmente: responder con la IA de todas formas).
 function getReply(nodes, edges, incomingWord, currentUserState) {
     const safeWord = String(incomingWord || "").trim().toLowerCase();
 
@@ -815,17 +813,19 @@ async function makeObjs(msg, k) {
 }
 
 // Arma el prompt de sistema + el historial reciente en el formato que espera
-// la API de chat de Ollama. Contexto/reglas de prueba, sin variables externas.
-function buildMensajesIA(uid, chatId, msg) {
-    const contextoEmpresa = `Eres Earvin Arizmendi, estudiante de sistemas en México. Hablas de forma casual.
-        REGLAS DE COMPORTAMIENTO:
-        1. Usa español mexicano relajado (ej. qué onda, jalas, simón, jajaja).
-        2. FORMATO ESTRICTO: Interfaz de terminal SMS antigua. Utiliza EXCLUSIVAMENTE el alfabeto latino (A-Z, a-z), números y signos de puntuación básicos. Cero gráficos.
-        3. Tus respuestas deben ser MUY cortas (máximo 15 palabras).
-        4. Eres un compa platicando. Responde directo y nunca ofrezcas ayuda.
-        5. Juegas Brawl Stars y Minecraft solo en la mañana o después de las 5 PM.`;
+function buildMensajesIA(uid, chatId, msg, promptDinamico) {
+    const personalidad = promptDinamico || `Eres un asistente virtual útil y breve.`;
+    // Reglas internas default
+    const reglasSistema = `
+        REGLAS ESTRICTAS DEL SISTEMA (INQUEBRANTABLES):
+        1. Tu respuesta final DEBE SER EXTREMADAMENTE CORTA (máximo 20 palabras). 
+        2. Sé directo y conciso. Termina tus oraciones rápidamente.
+        3. FORMATO ESTRICTO: Interfaz SMS clásica. Utiliza exclusivamente letras, números y signos de puntuación básicos.
+        4. CERO EMOJIS. No uses caritas, símbolos ni asteriscos.
+    `;
+    const contextoFinal = `${personalidad}\n\n${reglasSistema}`;
 
-    let mensajesChat = [{ role: "system", content: contextoEmpresa }];
+    let mensajesChat = [{ role: "system", content: contextoFinal }];
 
     const chatPath = `${__dirname}/../conversations/inbox/${uid}/${chatId}.json`;
     const historialRaw = readJSONFile(chatPath, 8);
@@ -848,7 +848,7 @@ function buildMensajesIA(uid, chatId, msg) {
                 content: pastText
             });
         }
-    });
+    }); 
 
     let textoActual = msg?.text;
     if (!textoActual) {
@@ -891,14 +891,13 @@ async function resolveChatId(uid, sessionId, cleanJid) {
 // Se usa tanto cuando el mensaje no cae en ningún nodo raíz del flujo, como
 // cuando el usuario está dentro de un flujo y responde algo fuera de las
 // opciones válidas de ese menú.
-async function responderConIA({ uid, cleanJid, chatId, msg, session, sessionId }) {
+async function responderConIA({ uid, cleanJid, chatId, msg, session, sessionId, chatbotData }) {
     console.log(`[Chatbot IA] Mensaje fuera de guion detectado. Consultando a Ollama...`);
 
     await session.sendPresenceUpdate('composing', cleanJid);
 
-    const mensajesChat = buildMensajesIA(uid, chatId, msg);
+    const mensajesChat = buildMensajesIA(uid, chatId, msg, chatbotData?.ai_prompt);
 
-    // Imprimir en consola la memoria exacta que va a leer la IA (para depurar)
     console.log("[Chatbot IA] Memoria ensamblada:", mensajesChat);
 
     const respuestaIA = await generarRespuestaIA(mensajesChat);
@@ -963,7 +962,6 @@ async function runChatbot(i, msg, uid, client_id, m, sessionId, session) {
         }
     }
 
-    // chat_id se resuelve una sola vez: lo usan tanto el envío de guion como la IA.
     const chatId = await resolveChatId(uid, sessionId, cleanJid);
 
     let answer = [];
@@ -974,11 +972,8 @@ async function runChatbot(i, msg, uid, client_id, m, sessionId, session) {
         answer = result.nodes;
         isFallback = result.isFallback;
     }
-    // Si no hay flujo configurado (nodes/edges vacíos), isFallback se queda en true:
-    // se trata igual que "fuera de guion" y responde la IA directamente.
 
     if (!isFallback) {
-        // Respuesta de guion válida (palabra raíz o una opción de menú): NUNCA pasa por la IA.
         const hasNextSteps = edges.some(edge => answer.some(node => String(node.id) === String(edge.source)));
 
         if (hasNextSteps) {
@@ -1003,10 +998,7 @@ async function runChatbot(i, msg, uid, client_id, m, sessionId, session) {
             }
         }
     } else {
-        // Fuera de guion: ya sea que el flujo tenga un nodo {{OTHER_MSG}} dibujado o no,
-        // responde la IA. El estado del menú pendiente (si había uno) se deja intacto,
-        // para que el usuario pueda seguir contestando la opción válida después.
-        await responderConIA({ uid, cleanJid, chatId, msg, session, sessionId });
+        await responderConIA({ uid, cleanJid, chatId, msg, session, sessionId, chatbotData: chatbot });
     }
 }
 
