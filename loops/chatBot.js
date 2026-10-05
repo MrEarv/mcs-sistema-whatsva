@@ -64,382 +64,47 @@ function formatMobileNumber(identifier) {
 }
 
 async function convertMsg({ obj = {}, outgoing = false, pollMessage = "" }) {
-    // console.log({ obj: JSON.stringify(obj) }convertMsg)
-    const timestamp = Math.floor(Date.now() / 1000)
+    const timestamp = Math.floor(Date.now() / 1000);
 
-    // for image message 
-    if (obj?.message?.imageMessage && obj?.key?.remoteJid !== "status@broadcast" && obj?.key?.remoteJid) {
-        if (obj?.key?.remoteJid?.endsWith("@g.us")) {
-            return {
-                group: true,
-                type: "image",
-                msgId: obj?.key?.id,
-                remoteJid: obj?.key?.remoteJid,
-                text: obj?.message?.imageMessage?.caption || "",
-                reaction: "",
-                timestamp: obj?.messageTimestamp || timestamp,
-                senderName: obj?.pushName,
-                status: "sent",
-                star: false,
-                route: outgoing ? 'outgoing' : "incoming"
-            }
-        }
-        if (obj?.key?.remoteJid?.endsWith("@s.whatsapp.net")) {
-            return {
-                group: false,
-                type: "image",
-                msgId: obj?.key?.id,
-                remoteJid: obj?.key?.remoteJid,
-                text: obj?.message?.imageMessage?.caption || "",
-                reaction: "",
-                timestamp: obj?.messageTimestamp || timestamp,
-                senderName: obj?.pushName,
-                status: "sent",
-                star: false,
-                route: outgoing ? 'outgoing' : "incoming"
-            }
-        }
+    // Validación base
+    if (!obj?.key?.remoteJid || obj.key.remoteJid === "status@broadcast") return null;
+
+    const isGroup = obj.key.remoteJid.endsWith("@g.us");
+    const remoteJid = obj.key.remoteJid;
+    const msgId = obj.key.id;
+    const senderName = obj.pushName || "Usuario";
+    const route = outgoing ? 'outgoing' : "incoming";
+
+    // Función constructora para no repetir código
+    const buildReturn = (type, text, msgContext = {}) => ({
+        group: isGroup, type, msgId, remoteJid, msgContext, reaction: "",
+        timestamp: obj.messageTimestamp || timestamp,
+        senderName, status: "sent", star: false, route, context: "", text
+    });
+
+    if (obj?.message?.conversation || obj?.message?.extendedTextMessage?.text) {
+        const text = obj.message.conversation || obj.message.extendedTextMessage.text;
+        return buildReturn("text", text, { text });
+    } else if (obj?.message?.imageMessage) {
+        return buildReturn("image", obj.message.imageMessage.caption || "");
+    } else if (obj?.message?.videoMessage) {
+        return buildReturn("video", obj.message.videoMessage.caption || "");
+    } else if (obj?.message?.documentMessage || obj?.message?.documentWithCaptionMessage) {
+        const caption = obj?.message?.documentWithCaptionMessage?.message?.documentMessage?.caption || "";
+        return buildReturn("doc", caption);
+    } else if (obj?.message?.audioMessage) {
+        return buildReturn("aud", "");
+    } else if (obj?.message?.stickerMessage) {
+        return buildReturn("sticker", "");
+    } else if (obj?.message?.locationMessage) {
+        const loc = obj.message.locationMessage;
+        return buildReturn("loc", loc.address || "", { lat: loc.degreesLatitude, long: loc.degreesLongitude, name: loc.name, address: loc.address });
+    } else if (pollMessage) {
+        const voter = extractVoters(pollMessage);
+        if (voter?.length > 0) return buildReturn("poll", voter[0]?.name || "", { text: voter[0]?.name });
     }
-    // for location message 
-    else if (obj?.message?.locationMessage && obj?.key?.remoteJid !== "status@broadcast" && obj?.key?.remoteJid) {
-        if (obj?.key?.remoteJid?.endsWith("@g.us")) {
-            return {
-                group: true,
-                type: "loc",
-                msgId: obj?.key?.id,
-                remoteJid: obj?.key?.remoteJid,
-                msgContext: {
-                    lat: obj?.message?.locationMessage?.degreesLatitude,
-                    long: obj?.message?.locationMessage?.degreesLongitude,
-                    name: obj?.message?.locationMessage?.name,
-                    address: obj?.message?.locationMessage?.address
-                },
-                text: obj?.message?.locationMessage?.address || "",
-                reaction: "",
-                timestamp: obj?.messageTimestamp || timestamp,
-                senderName: obj?.pushName,
-                status: "sent",
-                star: false,
-                route: outgoing ? 'outgoing' : "incoming",
-                context: ""
-            }
-        }
-        if (obj?.key?.remoteJid?.endsWith("@s.whatsapp.net")) {
-            return {
-                group: false,
-                type: "loc",
-                msgId: obj?.key?.id,
-                remoteJid: obj?.key?.remoteJid,
-                msgContext: {
-                    lat: obj?.message?.locationMessage?.degreesLatitude,
-                    long: obj?.message?.locationMessage?.degreesLongitude,
-                    name: obj?.message?.locationMessage?.name,
-                    address: obj?.message?.locationMessage?.address
-                },
-                text: obj?.message?.locationMessage?.address || "",
-                reaction: "",
-                timestamp: obj?.messageTimestamp || timestamp,
-                senderName: obj?.pushName,
-                status: "sent",
-                star: false,
-                route: outgoing ? 'outgoing' : "incoming",
-                context: ""
-            }
-        }
-    }
-    // for text and extended text messages 
-    else if ((obj?.message?.conversation || obj?.message?.extendedTextMessage?.text) && obj?.key?.remoteJid !== "status@broadcast" && obj?.key?.remoteJid) {
-        
-        const textContent = obj?.message?.conversation || obj?.message?.extendedTextMessage?.text;
-        
-        return {
-            group: obj?.key?.remoteJid?.endsWith("@g.us"),
-            type: "text",
-            msgId: obj?.key?.id,
-            remoteJid: obj?.key?.remoteJid,
-            msgContext: {
-                text: textContent
-            },
-            text: textContent || "",
-            reaction: "",
-            timestamp: obj?.messageTimestamp || timestamp,
-            senderName: obj?.pushName || "Usuario",
-            status: "sent",
-            star: false,
-            route: outgoing ? 'outgoing' : "incoming",
-            context: ""
-        }
-    }
-    // for video mesage 
-    else if (obj?.message?.videoMessage && obj?.key?.remoteJid !== "status@broadcast" && obj?.key?.remoteJid) {
-        if (obj?.key?.remoteJid?.endsWith("@g.us")) {
-            return {
-                group: true,
-                type: "video",
-                msgId: obj?.key?.id,
-                remoteJid: obj?.key?.remoteJid,
-                msgContext: {
-                },
-                text: obj?.message?.videoMessage?.caption,
-                reaction: "",
-                timestamp: obj?.messageTimestamp || timestamp,
-                senderName: obj?.pushName,
-                status: "sent",
-                star: false,
-                route: outgoing ? 'outgoing' : "incoming"
-            }
-        }
-        if (obj?.key?.remoteJid?.endsWith("@s.whatsapp.net")) {
-            return {
-                group: false,
-                type: "video",
-                msgId: obj?.key?.id,
-                remoteJid: obj?.key?.remoteJid,
-                msgContext: {
-                },
-                text: obj?.message?.videoMessage?.caption,
-                reaction: "",
-                timestamp: obj?.messageTimestamp || timestamp,
-                senderName: obj?.pushName,
-                status: "sent",
-                star: false,
-                route: outgoing ? 'outgoing' : "incoming",
-            }
-        }
-    }
-    // document message 
-    // else if (obj?.message?.documentMessage && obj?.key?.remoteJid !== "status@broadcast" && obj?.key?.remoteJid) {
-    //     if (obj?.key?.remoteJid?.endsWith("@g.us")) {
-    //         return {
-    //             group: true,
-    //             type: "doc",
-    //             msgId: obj?.key?.id,
-    //             remoteJid: obj?.key?.remoteJid,
-    //             msgContext: {
-
-    //             },
-    //             text: "",
-    //             reaction: "",
-    //             timestamp: obj?.messageTimestamp || timestamp,
-    //             senderName: obj?.pushName,
-    //             status: "sent",
-    //             star: false,
-    //             route: outgoing ? 'outgoing' : "incoming"
-    //         }
-    //     }
-    //     if (obj?.key?.remoteJid?.endsWith("@s.whatsapp.net")) {
-    //         return {
-    //             group: false,
-    //             type: "doc",
-    //             msgId: obj?.key?.id,
-    //             remoteJid: obj?.key?.remoteJid,
-    //             msgContext: {
-
-    //             },
-    //             text: "",
-    //             reaction: "",
-    //             timestamp: obj?.messageTimestamp || timestamp,
-    //             senderName: obj?.pushName,
-    //             status: "sent",
-    //             star: false,
-    //             route: outgoing ? 'outgoing' : "incoming"
-    //         }
-    //     }
-    // }
-    // audio message 
-    // else if (obj?.message?.audioMessage && obj?.key?.remoteJid !== "status@broadcast" && obj?.key?.remoteJid) {
-
-    //     if (obj?.key?.remoteJid?.endsWith("@g.us")) {
-    //         return {
-    //             group: true,
-    //             type: "aud",
-    //             msgId: obj?.key?.id,
-    //             remoteJid: obj?.key?.remoteJid,
-    //             msgContext: {
-
-    //             },
-    //             text: "",
-    //             timestamp: obj?.messageTimestamp || timestamp,
-    //             senderName: obj?.pushName,
-    //             status: "sent",
-    //             star: false,
-    //             route: outgoing ? 'outgoing' : "incoming"
-    //         }
-    //     }
-    //     if (obj?.key?.remoteJid?.endsWith("@s.whatsapp.net")) {
-    //         return {
-    //             group: false,
-    //             type: "aud",
-    //             msgId: obj?.key?.id,
-    //             remoteJid: obj?.key?.remoteJid,
-    //             msgContext: {
-
-    //             },
-    //             text: "",
-    //             reaction: "",
-    //             timestamp: obj?.messageTimestamp || timestamp,
-    //             senderName: obj?.pushName,
-    //             status: "sent",
-    //             star: false,
-    //             route: outgoing ? 'outgoing' : "incoming"
-    //         }
-    //     }
-    // }
-    // document with caption 
-    else if (obj?.message?.documentWithCaptionMessage && obj?.key?.remoteJid !== "status@broadcast" && obj?.key?.remoteJid) {
-        if (obj?.key?.remoteJid?.endsWith("@g.us")) {
-            return {
-                group: true,
-                type: "doc_cap",
-                msgId: obj?.key?.id,
-                remoteJid: obj?.key?.remoteJid,
-                msgContext: {
-                },
-                text: obj?.message?.documentWithCaptionMessage?.message?.documentMessage?.caption,
-                reaction: "",
-                timestamp: obj?.messageTimestamp || timestamp,
-                senderName: obj?.pushName,
-                status: "sent",
-                star: false,
-                route: outgoing ? 'outgoing' : "incoming"
-            }
-        }
-        if (obj?.key?.remoteJid?.endsWith("@s.whatsapp.net")) {
-            return {
-                group: false,
-                type: "doc_cap",
-                msgId: obj?.key?.id,
-                remoteJid: obj?.key?.remoteJid,
-                msgContext: {
-                },
-                text: obj?.message?.documentWithCaptionMessage?.message?.documentMessage?.caption,
-                reaction: "",
-                timestamp: obj?.messageTimestamp || timestamp,
-                senderName: obj?.pushName,
-                status: "sent",
-                star: false,
-                route: outgoing ? 'outgoing' : "incoming"
-            }
-        }
-    }
-    // adding reaction 
-    // else if (obj?.message?.reactionMessage) {
-    //     if (obj?.key?.remoteJid?.endsWith("@g.us")) {
-    //         return {
-    //             group: true,
-    //             type: "reaction",
-    //             msgId: obj?.message?.reactionMessage?.key?.id,
-    //             reaction: obj?.message?.reactionMessage?.text
-    //         }
-    //     }
-    //     if (obj?.key?.remoteJid?.endsWith("@s.whatsapp.net")) {
-    //         return {
-    //             group: false,
-    //             type: "reaction",
-    //             msgId: obj?.message?.reactionMessage?.key?.id,
-    //             reaction: obj?.message?.reactionMessage?.text
-    //         }
-    //     }
-    // }
-
-    // adding quotes text extended message 
-    else if (obj?.message?.extendedTextMessage?.contextInfo?.stanzaId && obj?.key?.remoteJid !== "status@broadcast") {
-        if (obj?.key?.remoteJid?.endsWith("@g.us")) {
-            return {
-                group: true,
-                type: "text",
-                msgId: obj?.key?.id,
-                remoteJid: obj?.key?.remoteJid,
-                msgContext: {
-                    text: obj?.message?.extendedTextMessage?.text
-                },
-                text: obj?.message?.extendedTextMessage?.text,
-                reaction: "",
-                timestamp: obj?.messageTimestamp || timestamp,
-                senderName: obj?.pushName,
-                status: "sent",
-                star: false,
-                route: outgoing ? 'outgoing' : "incoming",
-                context: {
-                    jid: obj?.message?.extendedTextMessage?.contextInfo?.participant,
-                    id: obj?.message?.extendedTextMessage?.contextInfo?.stanzaId
-                }
-            }
-        }
-        if (obj?.key?.remoteJid?.endsWith("@s.whatsapp.net")) {
-            return {
-                group: false,
-                type: "text",
-                msgId: obj?.key?.id,
-                remoteJid: obj?.key?.remoteJid,
-                msgContext: {
-                    text: obj?.message?.extendedTextMessage?.text
-                },
-                text: obj?.message?.extendedTextMessage?.text,
-                reaction: "",
-                timestamp: obj?.messageTimestamp || timestamp,
-                senderName: obj?.pushName,
-                status: "sent",
-                star: false,
-                route: outgoing ? 'outgoing' : "incoming",
-                context: {
-                    jid: obj?.message?.extendedTextMessage?.contextInfo?.participant,
-                    id: obj?.message?.extendedTextMessage?.contextInfo?.stanzaId
-                }
-            }
-        }
-    }
-
-    // for poll 
-    else if (pollMessage && obj?.key?.remoteJid !== "status@broadcast" && obj?.key?.remoteJid) {
-
-        const voter = extractVoters(pollMessage)
-
-        if (voter?.length > 0) {
-            if (obj?.key?.remoteJid?.endsWith("@g.us")) {
-                return {
-                    group: true,
-                    type: "poll",
-                    msgId: obj?.key?.id,
-                    remoteJid: obj?.key?.remoteJid,
-                    msgContext: {
-                        text: voter[0]?.name
-                    },
-                    text: voter[0]?.name || "",
-                    reaction: "",
-                    timestamp: obj?.messageTimestamp || timestamp,
-                    senderName: obj?.pushName,
-                    status: "sent",
-                    star: false,
-                    route: outgoing ? 'outgoing' : "incoming",
-                    context: ""
-                }
-            }
-            if (obj?.key?.remoteJid?.endsWith("@s.whatsapp.net")) {
-                return {
-                    group: false,
-                    type: "poll",
-                    msgId: obj?.key?.id,
-                    remoteJid: obj?.key?.remoteJid,
-                    msgContext: {
-                        text: voter[0]?.name
-                    },
-                    text: voter[0]?.name || "",
-                    reaction: "",
-                    timestamp: obj?.messageTimestamp || timestamp,
-                    senderName: obj?.pushName,
-                    status: "sent",
-                    star: false,
-                    route: outgoing ? 'outgoing' : "incoming",
-                    context: ""
-                }
-            }
-        }
-    }
-
-    else {
-        return null
-    }
+    
+    return null;
 }
 // funcion findtargetNodes fusionada con getreply
 function getReply(nodes, edges, incomingWord, currentUserState) {
@@ -822,6 +487,7 @@ function buildMensajesIA(uid, chatId, msg, promptDinamico) {
         2. Sé directo y conciso. Termina tus oraciones rápidamente.
         3. FORMATO ESTRICTO: Interfaz SMS clásica. Utiliza exclusivamente letras, números y signos de puntuación básicos.
         4. CERO EMOJIS. No uses caritas, símbolos ni asteriscos.
+        5. IMPORTANTE: Si el usuario dice "[Sticker]", "[Foto]" o "[Multimedia]", responde amablemente que eres un asistente virtual y solo puedes leer texto.
     `;
     const contextoFinal = `${personalidad}\n\n${reglasSistema}`;
 
