@@ -951,7 +951,7 @@ async function runChatbot(i, msg, uid, client_id, m, sessionId, session) {
 
     msg.remoteJid = cleanJid;
 
-    const chatUserKey = `${uid}_${cleanJid}`;
+    const chatUserKey = `${uid}_${sessionId}_${cleanJid}`;
     let currentUserState = global.userStates.get(chatUserKey);
 
     if (currentUserState && currentUserState.length > 0) {
@@ -1015,7 +1015,7 @@ async function chatbotInit(m, wa, sessionId, session, pollMessage) {
             incomingText: incomingText
         })
 
-        if (incomingText && !msg?.group) {
+        if (msg && !msg?.group) {
             const { uid, client_id } = decodeObject(sessionId)
 
             if (await checkPlan(uid)) {
