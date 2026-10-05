@@ -187,294 +187,128 @@ async function checkPlan(uid) {
 }
 
 async function makeObjs(msg, k) {
-    const type = k?.nodeType
+    const type = k?.nodeType;
+    const remoteJid = msg?.remoteJid;
+    const senderName = msg?.senderName;
+    const mobile = formatMobileNumber(remoteJid) || remoteJid;
 
-    if (type === 'text') {
-        const msgObj = {
-            text: replaceVariables(k?.msgContent?.text, {
-                name: msg?.senderName,
-                mobile: formatMobileNumber(msg?.remoteJid) || msg?.remoteJid
-            }) || k?.msgContent?.text
-        }
+    // Helper matemático idéntico al original: evalúa variable || texto original || fallback
+    const parseText = (text, fallback) => {
+        if (!text) return fallback;
+        return replaceVariables(text, { name: senderName, mobile }) || text || fallback;
+    };
 
-        const saveObj = {
-            "group": false,
-            "type": "text",
-            "msgId": "",
-            "remoteJid": msg?.remoteJid,
-            "msgContext": msgObj,
-            "reaction": "",
-            "timestamp": "",
-            "senderName": msg?.senderName,
-            "status": "sent",
-            "star": false,
-            "route": "outgoing",
-            "context": ""
-        }
+    const baseSaveObj = {
+        group: false,
+        msgId: "",
+        remoteJid,
+        reaction: "",
+        timestamp: "",
+        senderName,
+        status: "sent",
+        star: false,
+        route: "outgoing",
+        context: ""
+    };
 
-        const sendObj = {}
+    let sendObj = {};
+    let msgObj = {};
+    let saveType = type;
 
-        return {
-            msgObj,
-            saveObj,
-            sendObj
-        }
-    } else if (type === 'image') {
-        const sendObj = {
-            image: {
-                url: `${__dirname}/../client/public/media/${k?.msgContent?.image?.url}`
-            },
+    switch (type) {
+        case 'text':
+            msgObj = { text: parseText(k?.msgContent?.text, "") };
+            break;
 
-            caption: replaceVariables(k?.msgContent?.caption, {
-                name: msg?.senderName,
-                mobile: formatMobileNumber(msg?.remoteJid) || msg?.remoteJid
-            })
-                || k?.msgContent?.caption || null,
+        case 'image':
+            sendObj = {
+                image: { url: `${__dirname}/../client/public/media/${k?.msgContent?.image?.url}` },
+                caption: parseText(k?.msgContent?.caption, null),
+                fileName: k?.msgContent?.image?.url,
+                jpegThumbnail: getImageAsBase64(`${__dirname}/../client/public/media/${k?.msgContent?.image?.url}`)
+            };
+            msgObj = {
+                caption: parseText(k?.msgContent?.caption, ""),
+                fileName: k?.msgContent?.image?.url,
+                mimetype: k?.msgContent?.mimetype
+            };
+            break;
 
+        case 'doc':
+            sendObj = {
+                document: { url: `${__dirname}/../client/public/media/${k?.msgContent?.document?.url}` },
+                caption: parseText(k?.msgContent?.caption, null),
+                fileName: k?.msgContent?.fileName
+            };
+            msgObj = {
+                caption: parseText(k?.msgContent?.caption, null),
+                fileName: k?.msgContent?.fileName,
+                mimetype: k?.data?.state?.mime || ""
+            };
+            break;
 
-            fileName: k?.msgContent?.image?.url,
-            jpegThumbnail: getImageAsBase64(`${__dirname}/../client/public/media/${k?.msgContent?.image?.url}`)
-        }
+        case 'location':
+            sendObj = {
+                location: {
+                    degreesLatitude: k?.msgContent?.location?.degreesLatitude,
+                    degreesLongitude: k?.msgContent?.location?.degreesLongitude
+                }
+            };
+            msgObj = {
+                lat: k?.msgContent?.location?.degreesLatitude,
+                long: k?.msgContent?.location?.degreesLongitude,
+                name: "",
+                address: ""
+            };
+            saveType = "loc";
+            break;
 
-        const msgObj = {
+        case 'aud':
+            sendObj = {
+                audio: { url: `${__dirname}/../client/public/media/${k?.msgContent?.audio?.url}` },
+                fileName: k?.msgContent?.fileName,
+                ptt: true
+            };
+            msgObj = {
+                caption: "",
+                fileName: k?.msgContent?.fileName,
+                mimetype: k?.msgContent?.data?.state?.mime || ""
+            };
+            break;
 
-            caption: replaceVariables(k?.msgContent?.caption, {
-                name: msg?.senderName,
-                mobile: formatMobileNumber(msg?.remoteJid) || msg?.remoteJid
-            })
-                || k?.msgContent?.caption || "",
+        case 'video':
+            sendObj = {
+                video: { url: `${__dirname}/../client/public/media/${k?.msgContent?.video?.url}` },
+                caption: parseText(k?.msgContent?.caption, null)
+            };
+            msgObj = {
+                caption: parseText(k?.msgContent?.caption, ""),
+                mimetype: k?.data?.state?.mime
+            };
+            break;
 
-            fileName: k?.msgContent?.image?.url,
-            "mimetype": k?.msgContent?.mimetype
-        }
+        case 'poll':
+            const pollContent = k?.msgContent?.poll || k?.msgContent?.pollCreate || {};
+            const question = pollContent.name || k?.msgContent?.question || k?.data?.state?.question || '';
+            const options = Array.isArray(pollContent.values) ? pollContent.values
+                          : Array.isArray(pollContent.options) ? pollContent.options
+                          : Array.isArray(k?.data?.state?.options) ? k.data.state.options : [];
+            
+            msgObj = {
+                text: [question, ...options.map((opt, i) => `${i + 1}. ${opt}`)].filter(Boolean).join('\n')
+            };
+            saveType = "text";
+            break;
 
-        const saveObj = {
-            "group": false,
-            "type": "image",
-            "msgId": "",
-            "remoteJid": msg?.remoteJid,
-            "msgContext": msgObj,
-            "reaction": "",
-            "timestamp": "",
-            "senderName": msg?.senderName,
-            "status": "sent",
-            "star": false,
-            "route": "outgoing",
-            "context": ""
-        }
-
-        return {
-            sendObj,
-            msgObj,
-            saveObj
-        }
-    } else if (type === 'doc') {
-
-        const sendObj = {
-            document: {
-                url: `${__dirname}/../client/public/media/${k?.msgContent?.document?.url}`
-            },
-
-            caption: replaceVariables(k?.msgContent?.caption, {
-                name: msg?.senderName,
-                mobile: formatMobileNumber(msg?.remoteJid) || msg?.remoteJid
-            })
-                || k?.msgContent?.caption || null,
-
-            fileName: k?.msgContent?.fileName
-        }
-
-        const msgObj = {
-
-            caption: replaceVariables(k?.msgContent?.caption, {
-                name: msg?.senderName,
-                mobile: formatMobileNumber(msg?.remoteJid) || msg?.remoteJid
-            })
-                || k?.msgContent?.caption || null,
-
-            fileName: k?.msgContent?.fileName,
-            "mimetype": k?.data?.state?.mime || ""
-        }
-
-        const saveObj = {
-            "group": false,
-            "type": type,
-            "msgId": "",
-            "remoteJid": msg?.remoteJid,
-            "msgContext": msgObj,
-            "reaction": "",
-            "timestamp": "",
-            "senderName": msg?.senderName,
-            "status": "sent",
-            "star": false,
-            "route": "outgoing",
-            "context": ""
-        }
-
-        return {
-            sendObj,
-            msgObj,
-            saveObj
-        }
-    } else if (type === 'location') {
-
-        const sendObj = {
-            location: {
-                degreesLatitude: k?.msgContent?.location?.degreesLatitude,
-                degreesLongitude: k?.msgContent?.location?.degreesLongitude
-            }
-        }
-
-        const msgObj = {
-            lat: k?.msgContent?.location?.degreesLatitude,
-            long: k?.msgContent?.location?.degreesLongitude,
-            "name": "",
-            "address": ""
-        }
-
-        const saveObj = {
-            "group": false,
-            "type": "loc",
-            "msgId": "",
-            "remoteJid": msg?.remoteJid,
-            "msgContext": msgObj,
-            "reaction": "",
-            "timestamp": "",
-            "senderName": msg?.senderName,
-            "status": "sent",
-            "star": false,
-            "route": "outgoing",
-            "context": ""
-        }
-
-        return {
-            sendObj,
-            msgObj,
-            saveObj
-        }
-    } else if (type === 'aud') {
-
-        const sendObj = {
-            audio: {
-                url: `${__dirname}/../client/public/media/${k?.msgContent?.audio?.url}`
-            },
-            fileName: k?.msgContent?.fileName,
-            ptt: true
-        }
-
-        const msgObj = {
-            caption: "",
-            fileName: k?.msgContent?.fileName,
-            mimetype: k?.msgContent?.data?.state?.mime || ""
-        }
-
-        const saveObj = {
-            "group": false,
-            "type": "aud",
-            "msgId": "",
-            "remoteJid": msg?.remoteJid,
-            "msgContext": msgObj,
-            "reaction": "",
-            "timestamp": "",
-            "senderName": msg?.senderName,
-            "status": "sent",
-            "star": false,
-            "route": "outgoing",
-            "context": ""
-        }
-
-        return {
-            sendObj,
-            msgObj,
-            saveObj
-        }
-    } else if (type === 'video') {
-
-        const sendObj = {
-            video: {
-                url: `${__dirname}/../client/public/media/${k?.msgContent?.video?.url}`
-            },
-
-            caption: replaceVariables(k?.msgContent?.caption, {
-                name: msg?.senderName,
-                mobile: formatMobileNumber(msg?.remoteJid) || msg?.remoteJid
-            })
-                || k?.msgContent?.caption || null
-        }
-
-        const msgObj = {
-            caption: replaceVariables(k?.msgContent?.caption, {
-                name: msg?.senderName,
-                mobile: formatMobileNumber(msg?.remoteJid) || msg?.remoteJid
-            })
-                || k?.msgContent?.caption || "",
-            mimetype: k?.data?.state?.mime
-        }
-
-        const saveObj = {
-            "group": false,
-            "type": "video",
-            "msgId": "",
-            "remoteJid": msg?.remoteJid,
-            "msgContext": msgObj,
-            "reaction": "",
-            "timestamp": "",
-            "senderName": msg?.senderName,
-            "status": "sent",
-            "star": false,
-            "route": "outgoing",
-            "context": ""
-        }
-
-        return {
-            sendObj,
-            msgObj,
-            saveObj
-        }
-    } else if (type === 'poll') {
-
-        const pollContent = k?.msgContent?.poll || k?.msgContent?.pollCreate || {}
-        const question = pollContent.name || k?.msgContent?.question || k?.data?.state?.question || ''
-        const options = Array.isArray(pollContent.values)
-            ? pollContent.values
-            : (Array.isArray(pollContent.options)
-                ? pollContent.options
-                : (Array.isArray(k?.data?.state?.options) ? k.data.state.options : []))
-        const msgObj = {
-            text: [question, ...options.map((option, index) => `${index + 1}. ${option}`)]
-                .filter(Boolean)
-                .join('\n')
-        }
-
-        const saveObj = {
-            "group": false,
-            "type": "text",
-            "msgId": "",
-            "remoteJid": msg?.remoteJid,
-            "msgContext": msgObj,
-            "reaction": "",
-            "timestamp": "",
-            "senderName": msg?.senderName,
-            "status": "sent",
-            "star": false,
-            "route": "outgoing",
-            "context": ""
-        }
-
-        const sendObj = {}
-
-        return {
-            msgObj,
-            saveObj,
-            sendObj
-        }
-    } else {
-        return {
-            sendObj: {},
-            msgObj: {},
-            saveObj: {}
-        }
+        default:
+            return { sendObj: {}, msgObj: {}, saveObj: {} };
     }
+
+    return {
+        sendObj,
+        msgObj,
+        saveObj: { ...baseSaveObj, type: saveType, msgContext: msgObj }
+    };
 }
 
 // Arma el prompt de sistema + el historial reciente en el formato que espera
