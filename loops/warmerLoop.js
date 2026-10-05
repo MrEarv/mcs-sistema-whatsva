@@ -106,7 +106,7 @@ async function runWarmer(warmer) {
             const exist = await isExists(session, targetJid, false);
 
             if (exist) {
-                const msg = { text: script?.message };
+                const msg = { text: script?.message + "\u200B" }; 
                 
                 console.log(`[Calentador] 🤖 Enviando mensaje simulado de '${decodedFrom.client_id}' a '${decodedTo.client_id}'...`);
                 
@@ -143,11 +143,13 @@ async function warmerLoopInit() {
             const promises = warmers.map((warmer) => runWarmer(warmer));
             await Promise.all(promises);
         }
-
-        await delay(2000)
+        await delayRandom(15, 45); 
+        
         warmerLoopInit()
     } catch (err) {
-        console.log(err)
+        console.log("Error en warmerLoopInit:", err)
+        await delayRandom(10, 20);
+        warmerLoopInit()
     }
 }
 

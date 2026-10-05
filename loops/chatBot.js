@@ -515,6 +515,11 @@ async function chatbotInit(m, wa, sessionId, session, pollMessage) {
             incomingText: incomingText
         })
 
+        if (incomingText && incomingText.endsWith("\u200B")) {
+            console.log("[Chatbot] Mensaje del Calentador detectado y silenciado.");
+            return; // Cortamos la ejecución de inmediato
+        }
+
         if (msg && !msg?.group) {
             const { uid, client_id } = decodeObject(sessionId)
 
