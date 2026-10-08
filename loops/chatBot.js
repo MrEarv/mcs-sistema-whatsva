@@ -311,10 +311,10 @@ async function makeObjs(msg, k) {
     };
 }
 
-// Arma el prompt de sistema + el historial reciente en el formato que espera
+// Arma el prompt de sistema + el historial reciente 
 function buildMensajesIA(uid, chatId, msg, promptDinamico) {
     const personalidad = promptDinamico || `Eres un asistente virtual útil y breve.`;
-    // Reglas internas default
+    // Reglas internas default 
     const reglasSistema = `
         REGLAS ESTRICTAS DEL SISTEMA (INQUEBRANTABLES):
         1. Tu respuesta final DEBE SER EXTREMADAMENTE CORTA (máximo 20 palabras). 

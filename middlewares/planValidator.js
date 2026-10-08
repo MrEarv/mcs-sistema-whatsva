@@ -103,7 +103,8 @@ const checkForSessions = async (req, res, next) => {
 
 const checkForAPIAccess = async (req, res, next) => {
     try {
-        const apiAccess = parseInt(req.plan?.api_access) > 0 ? true : false
+        // no se cual sea el que se va a ocupar, debo arreglar eso, codigo heredado pues
+        const apiAccess = (parseInt(req.plan?.api_access) > 0 || parseInt(req.plan?.allow_api) > 0) ? true : false;
         if (apiAccess) {
             next()
         } else {

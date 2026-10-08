@@ -127,7 +127,7 @@ async function runWarmer(warmer) {
 function delayRandom(fromSeconds, toSeconds) {
     const randomSeconds = Math.random() * (toSeconds - fromSeconds) + fromSeconds;
 
-    console.log(`random Delay ${randomSeconds} sec`)
+   //console.log(`random Delay ${randomSeconds} sec`)
 
     return new Promise((resolve) => {
         setTimeout(() => {

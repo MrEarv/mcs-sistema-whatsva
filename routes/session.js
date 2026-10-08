@@ -170,13 +170,20 @@ router.post('/del_ins', validateUser, async (req, res) => {
 // get user instances 
 router.get('/get_mine', validateUser, async (req, res) => {
     try {
-        const data = await query(`SELECT * FROM instance WHERE uid = ?`, [req.decode.uid])
-        res.json({ data, success: true })
+        const data = await query(`SELECT * FROM instance WHERE uid = ?`, [req.decode.uid]);
+        const formattedData = data.map(inst => {
+            return {
+                ...inst,
+                instance_id: encodeObject({ uid: req.decode.uid, client_id: inst.title })
+            };
+        });
+
+        res.json({ data: formattedData, success: true });
     } catch (err) {
-        res.json({ success: false, msg: "something went wrong" })
-        console.log(err)
+        res.json({ success: false, msg: "something went wrong" });
+        console.log(err);
     }
-})
+});
 
 // get my contacts list 
 router.post('/instance_contact', validateUser, async (req, res) => {
