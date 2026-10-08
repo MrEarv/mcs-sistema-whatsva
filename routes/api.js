@@ -4,12 +4,11 @@ const bcrypt = require('bcrypt')
 const { sign } = require('jsonwebtoken')
 const validateUser = require('../middlewares/user.js')
 const moment = require('moment')
-const { decodeToken, readJSONFile } = require('../functions/function.js')
 const randomstring = require('randomstring')
 const { getSession, isExists, } = require('../middlewares/req.js')
 const csv = require('csv-parser');
 const mime = require('mime-types')
-const { encodeChatId, readJSONFile } = require('../functions/function.js');
+const { decodeToken, encodeChatId, readJSONFile } = require('../functions/function.js');
 const { sendTextMsg, sendMedia, send } = require('../functions/x.js');
 const { checkPlanExpiry, checkForAPIAccess } = require('../middlewares/planValidator.js')
 
