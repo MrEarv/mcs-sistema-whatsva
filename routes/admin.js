@@ -42,7 +42,7 @@ router.post('/login', async (req, res) => {
 })
 
 // get all users 
-router.get('/all_users', adminValidator, async (req, res) => {
+router.get('/all_users', validateUser /*adminValidator */, async (req, res) => {
     try {
         const data = await query(`SELECT * FROM user`, [])
         res.json({ data, success: true })
@@ -54,7 +54,7 @@ router.get('/all_users', adminValidator, async (req, res) => {
 
 
 // update user 
-router.post('/update_user', adminValidator, async (req, res) => {
+router.post('/update_user', validateUser /*adminValidator */, async (req, res) => {
     try {
         const { newPassword, name, email, mobile, uid } = req.body;
 
@@ -77,12 +77,12 @@ router.post('/update_user', adminValidator, async (req, res) => {
             if (newPassword) {
                 const hashpass = await bcrypt.hash(newPassword, 10)
 
-                await query(`UPDATE user SET name = ?, email = ?, password = ?, mobile = ? WHERE uid = ?`, [
+                await query(`UPDATE user SET name = ?, email = ?, password = ?, mobile_with_country_code = ? WHERE uid = ?`, [
                     name, email, hashpass, mobile, uid
                 ])
 
             } else {
-                await query(`UPDATE user SET name = ?, email = ?, mobile = ? WHERE uid = ?`, [
+                await query(`UPDATE user SET name = ?, email = ?, mobile_with_country_code = ? WHERE uid = ?`, [
                     name, email, mobile, uid
                 ])
             }
@@ -96,7 +96,7 @@ router.post('/update_user', adminValidator, async (req, res) => {
 })
 
 // del user 
-router.post('/del_user', adminValidator, async (req, res) => {
+router.post('/del_user', validateUser /*adminValidator */, async (req, res) => {
     try {
         const { id } = req.body
         await query(`DELETE FROM user WHERE id = ?`, [id])
